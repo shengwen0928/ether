@@ -1,0 +1,88 @@
+# CI 草稿：PR 檢查（DRAFT，未驗證）
+#
+# 警告：本檔案是草稿，位於 infrastructure/ci-drafts/，絕對不得以 push 方式
+# 建立 .github/workflows/（GitHub App 無 workflows 權限會回 403）。正式啟用時
+# 必須經雲端瀏覽器＋使用者登入工作階段，在 GitHub 網頁上手動建立對應的
+# workflow 檔案。詳見本目錄 README.md。
+# 本草稿未經 CI 實跑驗證；Go 版本、Action 版本皆於 2026-11-25 固定為草案
+# 標籤，實跑時須覆核是否仍受支援。Secrets 掃描工具與依賴掃描工具待
+# Phase 11 定稿（見 docs/testing/TEST_STRATEGY.md §9），此處僅為示例，
+# 不得視為已定。合併規則（CI 失敗不得合併）待 Phase 01 定稿。
+
+name: pr-checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-gates:
+    name: PR 檢查閘門
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # 須與 services/*/Dockerfile 的 golang:1.25.0-alpine3.21 對齊。
+          go-version: "1.25.0"
+
+      - name: gofmt 與 go vet
+        run: |
+          test -f services/api/go.mod || { echo "services/api/go.mod 尚未建立（尚無 Go 程式碼）"; exit 1; }
+          test -z "$(cd services/api && gofmt -l cmd internal)" || { echo "gofmt 發現格式不一致的檔案"; exit 1; }
+          cd services/api && go vet ./...
+
+      - name: 單元測試
+        run: |
+          cd services/api && go test ./...
+
+      - name: 靜態檢查（make verify-static）
+        run: |
+          python3 -m pip install --quiet pyyaml
+          make verify-static
+
+      - name: Compose config 驗證
+        run: docker compose -f infrastructure/docker/docker-compose.yml config -q
+
+      - name: 填入真實值的 .env 不得被追蹤
+        run: |
+          if git ls-files | grep -qx '\.env'; then echo "錯誤：.env 已被 Git 追蹤，須立即移除並輪換其中憑證"; exit 1; fi
+
+  secrets-scan:
+    name: Secrets 掃描
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 工具待 Phase 11 定稿；gitleaks 僅為草稿示例。
+      - name: Gitleaks 掃描
+        uses: gitleaks/gitleaks-action@v2
+
+  dependency-scan:
+    name: 依賴掃描（草案，工具待定稿）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+
+      # 依賴掃描工具待 Phase 11 定稿；以下以 govulncheck 為示例，不得視為已定。
+      # 版本以 @latest 浮動為草稿寫法，定稿時須固定版本。
+      - name: govulncheck（示例）
+        run: |
+          test -f services/api/go.mod || { echo "services/api/go.mod 尚未建立（尚無 Go 程式碼）"; exit 1; }
+          cd services/api && go run golang.org/x/vuln/cmd/govulncheck@latest ./...

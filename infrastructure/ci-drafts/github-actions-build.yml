@@ -1,0 +1,110 @@
+# CI 草稿：建置（DRAFT，未驗證）
+#
+# 警告：本檔案是草稿，位於 infrastructure/ci-drafts/，絕對不得以 push 方式
+# 建立 .github/workflows/（GitHub App 無 workflows 權限會回 403）。正式啟用時
+# 必須經雲端瀏覽器＋使用者登入工作階段，在 GitHub 網頁上手動建立對應的
+# workflow 檔案。詳見本目錄 README.md。
+# 本草稿未經 CI 實跑驗證；Go 版本、Action 版本皆於 2026-11-25 固定為草案
+# 標籤，實跑時須覆核是否仍受支援。Secrets 掃描工具待 Phase 11 定稿
+# （見 docs/testing/TEST_STRATEGY.md §9），此處 gitleaks 僅為示例，不得視為已定。
+# 預期狀態：程式碼尚無、compose 對齊缺口（G-01／G-02）未解決前，本 workflow
+# 的建置步驟會失敗；失敗時不得合併，不得以紅燈為常態。
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go-build-test:
+    name: Go 建置／Lint／測試
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # 須與 services/*/Dockerfile 的 golang:1.25.0-alpine3.21 對齊；升級須同步改 Dockerfile，不得單改一處。
+          go-version: "1.25.0"
+
+      - name: gofmt 檢查
+        run: |
+          test -f services/api/go.mod || { echo "services/api/go.mod 尚未建立（尚無 Go 程式碼）"; exit 1; }
+          test -z "$(cd services/api && gofmt -l cmd internal)" || { echo "gofmt 發現格式不一致的檔案"; exit 1; }
+
+      - name: go vet
+        run: |
+          cd services/api && go vet ./...
+
+      - name: go test
+        run: |
+          cd services/api && go test ./...
+
+  docker-build:
+    name: Docker 映像建置（不推送）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 建置 api 映像
+        uses: docker/build-push-action@v6
+        with:
+          context: services/api
+          file: services/api/Dockerfile
+          push: false
+          tags: ether-api:ci
+
+      # 注意：以下兩步以各服務獨立 Dockerfile 與獨立 context 建置，與 G-01
+      # 方案 A 一致，見 docs/decisions/ADR-015-G-01獨立Dockerfile與建置context.md；
+      # build context 參照與 docker-compose.yml 一致。
+      - name: 建置 realtime-gateway 映像
+        uses: docker/build-push-action@v6
+        with:
+          context: services/realtime-gateway
+          file: services/realtime-gateway/Dockerfile
+          push: false
+          tags: ether-realtime-gateway:ci
+
+      - name: 建置 worker 映像
+        uses: docker/build-push-action@v6
+        with:
+          context: services/worker
+          file: services/worker/Dockerfile
+          push: false
+          tags: ether-worker:ci
+
+  compose-config:
+    name: Compose config 驗證
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: docker compose config 驗證
+        run: docker compose -f infrastructure/docker/docker-compose.yml config -q
+
+  secrets-scan:
+    name: Secrets 掃描
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 工具待 Phase 11 定稿；gitleaks 僅為草稿示例。
+      - name: Gitleaks 掃描
+        uses: gitleaks/gitleaks-action@v2

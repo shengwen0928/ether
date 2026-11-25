@@ -1,0 +1,25 @@
+# services/realtime-gateway .dockerignore（Phase 01 骨架）
+# 只讓建置 context 含必要檔案。填入真實值的 .env、憑證、金鑰一律不得進入映像。
+# 注意：現行 docker-compose.yml 的 realtime-gateway 服務已改為以本目錄為
+# context（G-01 方案 A，見 ADR-015），compose 建置時以本檔案為準，本檔案
+# 已生效（見 docs/phase01/compose-alignment-notes.md）。
+
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+**/credentials/**
+**/secrets/**
+Dockerfile*
+.dockerignore
+README.md
+*_test.go
+/tmp/
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,434 @@
+# ETHER Docker Compose（自架部署，已批准＋本次修訂）
+#
+# 狀態：已批准＋本次修訂。不得宣稱已實測啟動。
+# 此 VM 無 docker，全部服務的啟動、連線、Health Check 皆為「待 CI 或有 Docker 的環境驗證」。
+# 專案尚無應用程式碼：api、realtime-gateway、worker 的 build context 指向未來目錄
+# （services/api 等，見 SPEC-SOURCE.md §26），在 Phase 01 程式碼與 Dockerfile 完成前，
+# 本檔案無法完整啟動應用服務；僅基礎設施服務（資料庫、快取、佇列、儲存、搜尋、
+# Secrets、身分、閘道、監控、通話、向量、AI）的形態可先行對照。
+# 映像標籤、Health Check 指令、連接埠皆為草案，待有 Docker 的環境驗證後定稿。
+# 不得含真實金鑰：全部憑證皆以 ${VAR} 參照 .env（見 ~/workspace/ether/.env.example 佔位符）
+# 或 OpenBao 注入，不得寫死在本檔案。
+#
+# 架構調整（2026-11-25 00:33 使用者指令）：PostgreSQL 自架、Valkey、MinIO、
+# Meilisearch、OpenBao、Keycloak、Traefik、NATS JetStream、LiveKit Community Edition、
+# pgvector（已定案，見 ADR-017）、Ollama、Prometheus＋Grafana＋Loki、GlitchTip。
+# 舊付費服務名不得殘留於本檔案。
+
+name: ether
+
+services:
+  # ---------- 邊緣閘道 ----------
+  traefik:
+    image: traefik:v3
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.invalid}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+    networks:
+      - ether-front
+      - ether-back
+    healthcheck:
+      # 草案：待有 Docker 的環境驗證。
+      test: ["CMD-SHELL", "traefik healthcheck --ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------- 應用服務（程式碼尚無，待 Phase 01） ----------
+  api:
+    build:
+      context: ../../services/api
+      dockerfile: Dockerfile
+    image: ether-api:dev
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ether}:${POSTGRES_PASSWORD:-change-me}@postgresql:5432/${POSTGRES_DB:-ether}?sslmode=disable
+      VALKEY_URL: redis://valkey:6379/0
+      NATS_URL: nats://nats:4222
+      MINIO_ENDPOINT: minio:9000
+      MEILISEARCH_URL: http://meilisearch:7700
+      KEYCLOAK_URL: http://keycloak:8080
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ether-api.rule=Host(`api.${DOMAIN:-example.invalid}`)"
+      - "traefik.http.routers.ether-api.entrypoints=websecure"
+      - "traefik.http.routers.ether-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ether-api.loadbalancer.server.port=8080"
+
+  realtime-gateway:
+    build:
+      context: ../../services/realtime-gateway
+      dockerfile: Dockerfile
+    image: ether-realtime-gateway:dev
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ether}:${POSTGRES_PASSWORD:-change-me}@postgresql:5432/${POSTGRES_DB:-ether}?sslmode=disable
+      VALKEY_URL: redis://valkey:6379/0
+      NATS_URL: nats://nats:4222
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ether-ws.rule=Host(`ws.${DOMAIN:-example.invalid}`)"
+      - "traefik.http.routers.ether-ws.entrypoints=websecure"
+      - "traefik.http.routers.ether-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ether-ws.loadbalancer.server.port=8081"
+
+  worker:
+    build:
+      context: ../../services/worker
+      dockerfile: Dockerfile
+    image: ether-worker:dev
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ether}:${POSTGRES_PASSWORD:-change-me}@postgresql:5432/${POSTGRES_DB:-ether}?sslmode=disable
+      VALKEY_URL: redis://valkey:6379/0
+      NATS_URL: nats://nats:4222
+      MINIO_ENDPOINT: minio:9000
+      MEILISEARCH_URL: http://meilisearch:7700
+    networks:
+      - ether-back
+    restart: unless-stopped
+
+  # ---------- 資料層 ----------
+  postgresql:
+    image: pgvector/pgvector:0.8.7-pg16-bookworm@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ether}
+      POSTGRES_USER: ${POSTGRES_USER:-ether}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ether} -d ${POSTGRES_DB:-ether}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  nats:
+    image: nats:2
+    command: ["-js", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-change-me}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me}
+    volumes:
+      - minio-data:/data
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  meilisearch:
+    image: getmeili/meilisearch:v1
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-change-me}
+    volumes:
+      - meilisearch-data:/meili_data
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7700/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------- Secrets 與身分 ----------
+  openbao:
+    image: openbao/openbao
+    command: ["server", "-dev"]
+    # 注意：-dev 僅供本機開發佔位；正式環境的 OpenBao 伺服器模式、解封流程待定稿，
+    # 不得以開發模式部署正式環境。見 SELF_HOSTING.md。
+    volumes:
+      - openbao-data:/vault/file
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8200/v1/sys/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26
+    command: ["start-dev"]
+    # 注意：start-dev 僅供本機開發佔位；正式環境的啟動參數、資料庫、憑證待定稿。
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgresql:5432/${KEYCLOAK_DB:-keycloak}
+      KC_DB_USERNAME: ${POSTGRES_USER:-ether}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      KC_HOSTNAME: auth.${DOMAIN:-example.invalid}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me}
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.keycloak.rule=Host(`auth.${DOMAIN:-example.invalid}`)"
+      - "traefik.http.routers.keycloak.entrypoints=websecure"
+      - "traefik.http.routers.keycloak.tls.certresolver=letsencrypt"
+      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
+
+  # ---------- 通話 ----------
+  livekit:
+    image: livekit/livekit-server
+    # 未啟用：本服務以 profiles: ["phase07"] 保留定義，預設不啟動；livekit.yaml
+    # 待 Phase 07 定稿後建立接線，不得加入開發金鑰。見 SELF_HOSTING.md §9。
+    profiles: ["phase07"]
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      LIVEKIT_KEYS: ${LIVEKIT_KEYS:-change-me}
+    ports:
+      # RTC UDP 埠範圍與公網部署需求待 Phase 07 評估定稿；以下為草案佔位，不得假裝已評估。
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    networks:
+      - ether-back
+    healthcheck:
+      # 草案：LiveKit 的 Health Check 方式待 Phase 07 定稿、待有 Docker 的環境驗證。
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7880/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------- AI（本地推理） ----------
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    # 模型清單、GPU／VRAM 需求待 Phase 09 評估；不得假設一般伺服器跑得動所有模型。
+    # vLLM 服務形態（獨立容器或與 Ollama 併行）待 Phase 09 定稿，本檔案未預寫 vLLM 容器。
+
+  # ---------- 監控與錯誤追蹤 ----------
+  prometheus:
+    image: prom/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN:-example.invalid}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+  loki:
+    image: grafana/loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - loki-data:/loki
+    networks:
+      - ether-back
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  glitchtip:
+    image: glitchtip/glitchtip
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ether}:${POSTGRES_PASSWORD:-change-me}@postgresql:5432/${GLITCHTIP_DB:-glitchtip}?sslmode=disable
+      # GlitchTip 的變數名為 REDIS_URL（上游介面名）；實際指向 Valkey，不得改接其他快取而不經定稿。
+      REDIS_URL: redis://valkey:6379/1
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-change-me}
+    networks:
+      - ether-back
+    healthcheck:
+      # 草案：GlitchTip 的 Health Check 路徑待有 Docker 的環境驗證後定稿。
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  traefik-letsencrypt:
+  postgres-data:
+  valkey-data:
+  nats-data:
+  minio-data:
+  meilisearch-data:
+  openbao-data:
+  ollama-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+
+networks:
+  ether-front:
+    name: ether-front
+  ether-back:
+    name: ether-back
+    internal: true

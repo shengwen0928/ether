@@ -1,0 +1,39 @@
+/*
+ * ETHER design tokens — Phase 01 skeleton (Admin).
+ *
+ * 唯一來源：docs/brand/DESIGN_TOKENS.md §1.1（品牌色板，已定）。
+ * 以下 8 個 CSS 變數逐字對照該節色碼；其餘 token 一律待 Phase 02 定稿，
+ * 不得編造色碼或數值（見 DESIGN_TOKENS.md §1.2–§1.3、§3）。
+ *
+ * 本檔案在 Phase 01 只定義變數，不定義任何元件樣式；不得在元件內寫死色碼。
+ * Admin 與 Web 共用同一組已定色碼，但 SPEC-SOURCE.md §26 未定義共用套件
+ * 目錄，故本檔案為各自獨立副本，不得自行發明 packages/ 共享目錄；
+ * 三端 token 共用機制為 Phase 02 待決缺口（見各自 README 與
+ * docs/phase01/react-notes.md）。
+ * 字體選用待 Phase 02 定稿（DESIGN_TOKENS.md §2 評估中），本檔案不預寫字體決定。
+ */
+
+:root {
+  --ether-midnight: #101923;
+  --deep-nebula: #182A3A;
+  --ethereal-blue: #86B9D2;
+  --silver-mist: #C7D5DE;
+  --pure-light: #F4F7F9;
+  --aurora-cyan: #65D4D6;
+  --soft-violet: #A99ACB;
+  --warm-horizon: #D9B98C;
+}
+
+/*
+ * 待 Phase 02 定稿（以下皆為註解，不得編造值）：
+ * - Dark / Light 主題映射（color.background、color.surface、color.primary、
+ *   color.text-primary、color.text-secondary、color.border 等）：
+ *   待 Phase 02 定稿。注意：Light 主題的 surface 與 text-secondary 不得
+ *   直接沿用既有色碼，須待定稿（見 DESIGN_TOKENS.md §1.3）。
+ * - color.surface-elevated、color.success、color.warning、color.error、
+ *   color.info：待 Phase 02 定稿。
+ * - 字體 tokens（font.family、font.scale、font.weight、line-height）：
+ *   待 Phase 02 定稿。
+ * - 間距、圓角、邊框、陰影／層級、動效、圖示、z-index tokens：
+ *   待 Phase 02 定稿。
+ */

@@ -1,0 +1,15 @@
+# ETHER Prometheus 設定（最小有效設定，僅自我抓取）
+#
+# G-03 處理方案（見 docs/phase01/EXECUTION_PLAN.md §4）：
+# Prometheus 以自我抓取即可乾淨啟動。其餘抓取目標待 Phase 05／11 定稿後加入，
+# 加入前不得假裝監控已覆蓋全部服務。
+# 待定稿後加入的抓取目標（見 ADR-012 指標清單）：api、realtime-gateway、worker、
+# NATS、LiveKit 等。定稿前不得以註解代替已接通的監控。
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

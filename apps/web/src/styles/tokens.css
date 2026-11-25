@@ -1,0 +1,198 @@
+/*
+ * ETHER Design Tokens — Phase 02.
+ *
+ * 品牌色板唯一來源：docs/brand/DESIGN_TOKENS.md §1.1（8 個品牌色，逐字保留）。
+ * 本檔案為 Phase 02 定稿的語意化 Token 系統：品牌色只出現在 --brand-*，
+ * 元件一律使用語意 Token（--bg-*、--text-*、--border-*、--accent-* 等），
+ * 不得在元件內寫死色碼。
+ *
+ * 主題：深色（預設）與淺色，皆以 data-theme="dark" | "light" 切換
+ * （見 src/theme/theme.tsx）。淺色主題的互動色以加深後的品牌藍為準，
+ * 因為 Ethereal Blue #86B9D2 在淺色背景上的對比度不足以承載文字與互動；
+ * 品牌色本身不變，只改變語意映射。
+ *
+ * 字體選擇（Phase 02 定稿，授權皆為 SIL OFL，可商用）：
+ * - 拉丁文：Inter（字重齊全、介面易讀性佳）。
+ * - 繁體中文：Noto Sans TC（繁中覆蓋完整、跨平台一致）。
+ * 兩者皆以 Google Fonts 載入（見 index.html），載入失敗時退回系統字體棧。
+ *
+ * 對比度：關鍵文字／互動配對皆以 WCAG 2.2 AA（一般文字 4.5:1）為目標，
+ * 2026-11-25 以指令碼實測記錄於交付報告；狀態色在深色主題用於圖示與粗體，
+ * 在淺色主題用於文字時皆採加深版本。
+ */
+
+:root {
+  /* 品牌色（唯一來源，兩主題共用，不直接用於元件） */
+  --brand-midnight: #101923;
+  --brand-nebula: #182a3a;
+  --brand-ethereal: #86b9d2;
+  --brand-silver: #c7d5de;
+  --brand-light: #f4f7f9;
+  --brand-aurora: #65d4d6;
+  --brand-violet: #a99acb;
+  --brand-horizon: #d9b98c;
+
+  /* 相容舊名（Phase 01 骨架曾定義的 8 個變數，保留指向品牌色） */
+  --ether-midnight: var(--brand-midnight);
+  --deep-nebula: var(--brand-nebula);
+  --ethereal-blue: var(--brand-ethereal);
+  --silver-mist: var(--brand-silver);
+  --pure-light: var(--brand-light);
+  --aurora-cyan: var(--brand-aurora);
+  --soft-violet: var(--brand-violet);
+  --warm-horizon: var(--brand-horizon);
+
+  /* 字體 */
+  --font-sans:
+    'Inter', 'Noto Sans TC', system-ui, -apple-system, 'Segoe UI', 'PingFang TC',
+    'Microsoft JhengHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  /* 字階（字體大小／行高） */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 20px;
+  --text-3xl: 24px;
+  --text-4xl: 30px;
+  --text-display: 36px;
+  --leading-tight: 1.25;
+  --leading-body: 1.5;
+  --leading-loose: 1.7;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* 間距（4px 基準） */
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --space-8: 24px;
+  --space-9: 32px;
+  --space-10: 40px;
+  --space-11: 48px;
+  --space-12: 64px;
+
+  /* 尺寸 */
+  --size-control-sm: 30px;
+  --size-control-md: 36px;
+  --size-control-lg: 44px;
+  --size-avatar-xs: 24px;
+  --size-avatar-sm: 32px;
+  --size-avatar-md: 40px;
+  --size-avatar-lg: 48px;
+  --size-avatar-xl: 64px;
+  --size-icon-sm: 16px;
+  --size-icon-md: 20px;
+  --size-icon-lg: 24px;
+
+  /* 圓角 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* 邊框 */
+  --border-width: 1px;
+
+  /* 陰影 */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.18);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.22);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.3);
+
+  /* 層級 */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-drawer: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+  --z-tooltip: 70;
+
+  /* 動態 */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 280ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 斷點（僅供文件對照；CSS 無法在 media query 中使用 var()，查詢式直接寫 px） */
+  --bp-phone-sm: 360px;
+  --bp-phone: 390px;
+  --bp-phone-lg: 430px;
+  --bp-tablet: 768px;
+  --bp-laptop: 1024px;
+  --bp-desktop: 1440px;
+  --bp-desktop-lg: 1920px;
+
+  /* 預設主題：深色（與 data-theme="dark" 相同，見下方） */
+  color-scheme: dark;
+  --bg-base: #101923;
+  --bg-surface: #182a3a;
+  --bg-elevated: #22374d;
+  --bg-hover: #243a52;
+  --bg-active: #2a4258;
+  --bg-overlay: rgb(8 13 20 / 0.72);
+  --bg-accent-soft: rgb(134 185 210 / 0.14);
+  --bg-success-soft: rgb(95 191 143 / 0.14);
+  --bg-warning-soft: rgb(217 185 140 / 0.14);
+  --bg-error-soft: rgb(222 123 123 / 0.14);
+  --text-primary: #f4f7f9;
+  --text-secondary: #c7d5de;
+  --text-tertiary: #8fa6b8;
+  --text-inverse: #101923;
+  --border-subtle: #263c52;
+  --border-strong: #334e66;
+  --accent: #86b9d2;
+  --accent-hover: #9cc8dd;
+  --accent-active: #aed4e4;
+  --accent-ink: #101923;
+  --interactive: #86b9d2;
+  --focus: #65d4d6;
+  --success: #5fbf8f;
+  --warning: #d9b98c;
+  --error: #de7b7b;
+  --info: #86b9d2;
+  --disabled-text: #6d8296;
+  --disabled-bg: #1d2f42;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg-base: #f4f7f9;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e9eef2;
+  --bg-active: #dde5eb;
+  --bg-overlay: rgb(16 25 35 / 0.48);
+  --bg-accent-soft: rgb(46 110 142 / 0.1);
+  --bg-success-soft: rgb(31 122 77 / 0.1);
+  --bg-warning-soft: rgb(138 90 29 / 0.1);
+  --bg-error-soft: rgb(179 38 30 / 0.08);
+  --text-primary: #101923;
+  --text-secondary: #3d556e;
+  --text-tertiary: #4f6c86;
+  --text-inverse: #ffffff;
+  --border-subtle: #d3dce3;
+  --border-strong: #b9c6d1;
+  --accent: #2e6e8e;
+  --accent-hover: #27617e;
+  --accent-active: #21546d;
+  --accent-ink: #ffffff;
+  --interactive: #2e6e8e;
+  --focus: #1f8a94;
+  --success: #1f7a4d;
+  --warning: #8a5a1d;
+  --error: #b3261e;
+  --info: #2e6e8e;
+  --disabled-text: #8fa3b3;
+  --disabled-bg: #e6ebef;
+}

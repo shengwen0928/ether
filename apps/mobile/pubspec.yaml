@@ -1,0 +1,42 @@
+# ETHER Flutter 骨架 — pubspec.yaml
+#
+# 版本固定於 2026-11-25，尚未經 pub 解析驗證，待 CI 驗證。
+# 本機 VM 無 flutter，pubspec 解析、編譯、測試皆未驗證，不得宣稱為已驗證。
+# 依賴一律固定版本（無 ^ 浮動寫法）；若 CI 解析失敗，由協調員調整固定版本，不得改為浮動寫法。
+# 版本選擇依據：撰寫當日所知的穩定版；未經 pub.dev 即時查證，見 docs/phase01/flutter-notes.md。
+
+name: ether
+description: ETHER Phase 01 骨架，尚無功能。僅可啟動的佔位殼，待後續階段實作。
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 狀態管理（SPEC-SOURCE.md 技術棧已定）。
+  flutter_riverpod: 2.5.1
+  # 路由（SPEC-SOURCE.md 技術棧已定）。本階段只有一個佔位路由。
+  go_router: 13.2.0
+  # HTTP 客戶端（SPEC-SOURCE.md 技術棧已定）。本階段不呼叫任何 API。
+  dio: 5.7.0
+  # 本機資料庫（SPEC-SOURCE.md 技術棧已定）。資料庫建置延至 Phase 05，
+  # 本階段僅宣告依賴，不建 Database 類別、不編造 schema。
+  drift: 2.18.0
+  # 安全儲存（SPEC-SOURCE.md 技術棧已定）。僅宣告，本階段不呼叫；
+  # 用途延至 Phase 03（Keycloak token 儲存），見 lib/core/storage/README.md。
+  flutter_secure_storage: 9.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 4.0.0
+  # Drift codegen 工具。codegen 在 CI 執行，建置延至 Phase 05。
+  drift_dev: 2.18.0
+  build_runner: 2.4.13
+
+flutter:
+  uses-material-design: true

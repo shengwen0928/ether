@@ -1,0 +1,38 @@
+{
+  // ETHER Web — Phase 01 skeleton tsconfig.
+  // Strictness trade-offs (see docs/phase01/react-notes.md):
+  // - exactOptionalPropertyTypes is ON: optional props must not be assigned
+  //   explicit `undefined` unless the type allows it; stricter, more honest.
+  // - noPropertyAccessFromIndexSignature is ON: index-signature access must
+  //   use bracket notation; avoids silent `any`-like property reads.
+  // - noUnusedLocals / noUnusedParameters are ON: skeleton code must stay
+  //   clean; intentionally unused values must be removed, not silenced.
+  // - No `paths` aliases: SPEC-SOURCE.md §26 defines no shared-package
+  //   directory, so no cross-app import alias is invented here (Phase 02 gap).
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "useUnknownInCatchVariables": true
+  },
+  "exclude": ["dist", "node_modules"],
+  "include": ["src", "vite.config.ts"]
+}

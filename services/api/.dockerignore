@@ -1,0 +1,25 @@
+# services/api .dockerignore（Phase 01 骨架）
+# 只讓建置 context 含必要檔案。填入真實值的 .env、憑證、金鑰一律不得進入映像。
+# 本檔案隨 build context 生效：現行 docker-compose.yml 僅 api 服務以本目錄
+# 為 context，compose 建置 api 時以本檔案為準（見
+# docs/phase01/compose-alignment-notes.md）。
+
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+**/credentials/**
+**/secrets/**
+Dockerfile*
+.dockerignore
+README.md
+*_test.go
+/tmp/
+.vscode/
+.idea/
+.DS_Store

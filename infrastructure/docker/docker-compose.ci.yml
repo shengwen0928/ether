@@ -1,0 +1,88 @@
+# ETHER Docker Compose CI Override（一次性隔離整合測試專用）
+#
+# 狀態：草稿，隨 ether-isolated-integration workflow 使用，未執行、未驗證。
+# 本檔案為 override，不得修改 base compose（infrastructure/docker/
+# docker-compose.yml）：不改任何映像、不改任何 digest、不改 volume 與
+# 網路定義、不改 base 的服務依賴與健康檢查。僅做三件事：
+#   1. 為 runner 存取所需服務加 127.0.0.1 埠對映（不公開至公網）；
+#   2. Keycloak 主機名覆寫（KC_HOSTNAME 為空＋KC_HOSTNAME_STRICT=false），
+#      並由 workflow 寫入 runner 的 /etc/hosts（127.0.0.1 keycloak／minio），
+#      全程以 http://keycloak:8080 為唯一 Keycloak 位址；
+#   3. 為 api／gateway 補上本次測試所需的環境變數（Realm、aud、開關、
+#      MinIO／Meilisearch 憑證皆由 workflow 隨機產生並經環境變數注入，
+#      本檔案不含任何真實值）。
+# Compose project 名由 workflow 以 COMPOSE_PROJECT_NAME 環境變數傳入
+# ether-isolated-integration（本檔案不設 name，避免與環境變數衝突）。
+# 未啟動的服務（traefik、ollama、livekit、openbao、prometheus、grafana、
+# loki、glitchtip）不在 integration job 啟動範圍；platform-checks job
+# 另行啟動其中部分服務，見 workflow。worker 無對外埠對映（compose 未
+# 為其定義 healthcheck，8082 佔位埠不對外暴露）。
+
+services:
+  postgresql:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  valkey:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  nats:
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+
+  meilisearch:
+    ports:
+      - "127.0.0.1:7700:7700"
+
+  keycloak:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      # 主機名覆寫：不以正式網域名稱啟動；issuer 由請求主機
+      # keycloak:8080 組裝，與 api 及 runner 的存取位址一致。
+      KC_HOSTNAME: ""
+      KC_HOSTNAME_STRICT: "false"
+
+  api:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KEYCLOAK_REALM: ${CI_REALM:-ether-ci}
+      KEYCLOAK_CLIENT_ID: ether-api
+      KEYCLOAK_AUDIENCE: ether-api
+      IDENTITY_STORE: postgres
+      # Track A 開關（本行程承載 Relay 與搜尋消費迴圈；Stream 與索引
+      # 由 workflow 預建，見 Stage 4／Stage 9）。
+      RELAY_ENABLED: "true"
+      SEARCH_CONSUMER_ENABLED: "true"
+      SEARCH_INDEX: meilisearch
+      MEILISEARCH_API_KEY: ${MEILI_MASTER_KEY}
+      MINIO_BUCKET: ${CI_MINIO_BUCKET:-ether-ci-media}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+
+  realtime-gateway:
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      KEYCLOAK_REALM: ${CI_REALM:-ether-ci}
+      KEYCLOAK_AUDIENCE: ether-api
+
+  # 監控服務埠對映（僅 platform-checks job 使用；integration job 不啟動）。
+  prometheus:
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  loki:
+    ports:
+      - "127.0.0.1:3100:3100"
