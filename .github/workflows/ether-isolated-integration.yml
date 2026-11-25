@@ -1,0 +1,879 @@
+# ETHER 一次性隔離整合測試（草稿，未執行、未驗證）
+#
+# 狀態：草稿。第一次實機執行須待 Repository 建立，且本檔案須經網頁
+# （雲端瀏覽器＋使用者登入工作階段）建立為 .github/workflows/ 內的
+# 正式檔案：GitHub App 沒有 workflows 寫入權限，以 API 推送本檔案會
+# 回 403，不得以 API 推送冒充已建立。見 docs/testing/
+# PHASE01_STEP07_INTEGRATION_REPORT.md（範本，狀態 BLOCKED）。
+#
+# 觸發：僅 workflow_dispatch（手動）。不得改為 push／pull_request 觸發，
+# 不得讓不可信 PR 執行本工作流程。
+# 權限：contents: read（最小權限）。不使用任何 secret、不使用正式憑證；
+# 全部測試密碼皆為本次 run 隨機產生、用後隨一次性 Runner 銷毀。
+# 成本：僅使用 GitHub Free 內含額度（公開 Repository 的 Actions 免費；
+# 不使用 Larger Runners、不啟用付費資源）。帳務前置查核見報告範本。
+#
+# TODO（執行前必須完成，不得跳過）：
+# 1. 將下方 actions/checkout 與 actions/upload-artifact 的佔位 SHA
+#    改為查證後的完整 commit SHA（本草稿撰寫時未查證，不得編造）。
+# 2. 確認 Repository 實際目錄結構：本檔案以「專案根目錄辨識」步驟
+#    自動定位 ETHER 專案根目錄（Repository 根目錄或其下 ether 子目錄），
+#    找不到標記檔案即停止，不得假設固定路徑。
+# 3. 首次執行前，重新核對 EXECUTION_PLAN.md §9.1 五項前置檢查的
+#    適用性（本檔案的 Stage 1 已將其編入步驟，不得跳過）。
+
+name: ether-isolated-integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ether-isolated-integration
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: 隔離整合測試（Stage 1–12）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # TODO：將佔位 SHA 改為查證後的完整 commit SHA（見檔頭 TODO）。
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: 專案根目錄辨識
+        id: root
+        run: |
+          for candidate in "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/ether"; do
+            if [ -f "$candidate/infrastructure/docker/docker-compose.yml" ] && [ -f "$candidate/services/api/go.mod" ]; then
+              echo "ETHER_ROOT=$candidate" >> "$GITHUB_ENV"
+              echo "EVIDENCE_DIR=$GITHUB_WORKSPACE/ci-evidence" >> "$GITHUB_ENV"
+              echo "root=$candidate" >> "$GITHUB_OUTPUT"
+              echo "專案根目錄：$candidate"
+              exit 0
+            fi
+          done
+          echo "::error::找不到 ETHER 專案根目錄（須含 infrastructure/docker/docker-compose.yml 與 services/api/go.mod）。" >&2
+          exit 1
+
+      - name: 產生本次專用隨機測試密碼
+        run: |
+          # 全部密碼皆為本次 run 的臨時值，不得寫入 Repository、不得印出、
+          # 不得上傳為 artifact。正式憑證一律不得出現在此工作流程中。
+          gen() { openssl rand -hex 24; }
+          CI_POSTGRES_PASSWORD="$(gen)"; echo "::add-mask::$CI_POSTGRES_PASSWORD"
+          CI_MINIO_ROOT_PASSWORD="$(gen)"; echo "::add-mask::$CI_MINIO_ROOT_PASSWORD"
+          CI_MEILI_MASTER_KEY="$(gen)"; echo "::add-mask::$CI_MEILI_MASTER_KEY"
+          CI_KEYCLOAK_ADMIN_PASSWORD="$(gen)"; echo "::add-mask::$CI_KEYCLOAK_ADMIN_PASSWORD"
+          CI_USER_A_PASSWORD="$(gen)"; echo "::add-mask::$CI_USER_A_PASSWORD"
+          CI_USER_B_PASSWORD="$(gen)"; echo "::add-mask::$CI_USER_B_PASSWORD"
+          {
+            echo "CI_POSTGRES_PASSWORD=$CI_POSTGRES_PASSWORD"
+            echo "CI_MINIO_ROOT_PASSWORD=$CI_MINIO_ROOT_PASSWORD"
+            echo "CI_MEILI_MASTER_KEY=$CI_MEILI_MASTER_KEY"
+            echo "CI_KEYCLOAK_ADMIN_PASSWORD=$CI_KEYCLOAK_ADMIN_PASSWORD"
+            echo "CI_USER_A_PASSWORD=$CI_USER_A_PASSWORD"
+            echo "CI_USER_B_PASSWORD=$CI_USER_B_PASSWORD"
+            echo "POSTGRES_DB=ether"
+            echo "POSTGRES_USER=ether"
+            echo "KEYCLOAK_DB=keycloak"
+            echo "MINIO_ROOT_USER=ether-ci"
+            echo "MEILI_MASTER_KEY=$CI_MEILI_MASTER_KEY"
+            echo "MEILISEARCH_API_KEY=$CI_MEILI_MASTER_KEY"
+            echo "KEYCLOAK_ADMIN=ci-admin"
+            echo "KEYCLOAK_ADMIN_PASSWORD=$CI_KEYCLOAK_ADMIN_PASSWORD"
+            echo "KEYCLOAK_REALM=ether-ci"
+            echo "CI_REALM=ether-ci"
+            echo "CI_MINIO_BUCKET=ether-ci-media"
+            echo "COMPOSE_PROJECT_NAME=ether-isolated-integration"
+            echo "COMPOSE_FILE=$ETHER_ROOT/infrastructure/docker/docker-compose.yml:$ETHER_ROOT/infrastructure/docker/docker-compose.ci.yml"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE_DIR/outcomes" "$RUNNER_TEMP/ether-ci"
+          chmod 700 "$RUNNER_TEMP/ether-ci"
+
+      - name: Stage 1——環境與 §9.1 安全檢查
+        run: |
+          {
+            echo "## Stage 1 環境檢查"
+            uname -a
+            echo "--- CPU / RAM / Disk ---"
+            nproc; free -h; df -h "$GITHUB_WORKSPACE"
+            echo "--- Docker / Compose / Buildx ---"
+            docker version
+            docker compose version
+            docker buildx version
+          } | tee "$EVIDENCE_DIR/stage-1-environment.txt"
+          # 新 Runner 必須是乾淨的：不得殘留任何容器、網路或 ether 相關 volume。
+          # 此為 §9.1 第 1 項（volume 狀態）在一次性 Runner 上的等效證明：
+          # 檢查輸出即證據，不得以「compose 從未啟動」一句話代替。
+          docker ps -a | tee "$EVIDENCE_DIR/stage-1-docker-ps.txt"
+          docker network ls | tee "$EVIDENCE_DIR/stage-1-docker-networks.txt"
+          docker volume ls | tee "$EVIDENCE_DIR/stage-1-docker-volumes.txt"
+          if [ -n "$(docker ps -aq)" ]; then echo "::error::新 Runner 上已有容器，隔離前提不成立，停止。" >&2; exit 1; fi
+          if docker volume ls -q | grep -qi 'ether'; then echo "::error::已有 ether 相關 volume，隔離前提不成立，停止。" >&2; exit 1; fi
+          # §9.1 第 2、3 項：POSTGRES_* 與連線設定更換前後不變（本 run 為
+          # 首次啟動，檢查點為 compose 渲染值與 .env.example 佔位值一致、
+          # 且本目錄不存在已填入真實值的 .env）。
+          test ! -f "$ETHER_ROOT/.env"
+          test ! -f "$ETHER_ROOT/infrastructure/docker/.env"
+          grep -q 'POSTGRES_PASSWORD:-change-me' "$ETHER_ROOT/infrastructure/docker/docker-compose.yml"
+          grep -q '^POSTGRES_PASSWORD=change-me$' "$ETHER_ROOT/.env.example"
+          # §9.1 第 5 項：下游服務清單（共用 PostgreSQL 者）為 keycloak 與
+          # glitchtip；glitchtip 由 platform-checks job 驗證（見該 job）。
+          grep -q 'KC_DB_URL' "$ETHER_ROOT/infrastructure/docker/docker-compose.yml"
+          grep -q 'GLITCHTIP_DB' "$ETHER_ROOT/infrastructure/docker/docker-compose.yml"
+          # 正式環境憑證不得存在：工作目錄內不得出現 GCE／正式資料庫連線字串。
+          if grep -rInE '35\.212\.|my-hohsin-bot|sslmode=require.*prod|gce' "$ETHER_ROOT/infrastructure" "$ETHER_ROOT/services" 2>/dev/null | grep -v 'example\.invalid'; then
+            echo "::error::疑似正式環境連線設定，停止。" >&2; exit 1
+          fi
+          jq -n '{stage:"stage-1",status:"PASS",detail:"新 Runner 無殘留容器／volume；無 .env；POSTGRES 佔位值一致。"}' > "$EVIDENCE_DIR/outcomes/stage-1.json"
+
+      - name: 主機名稱對映（keycloak／minio）
+        run: |
+          # api 容器與 runner 必須以同一位址取用 Keycloak（http://keycloak:8080），
+          # 否則 discovery 回傳的 issuer 不一致、驗證器拒絕啟動。
+          # MinIO presigned URL 的簽名綁定主機 minio:9000，runner 須以同一
+          # 主機名存取（Host 標頭不變、簽名才有效）。
+          # 僅寫入本次 Runner 的 /etc/hosts，隨 Runner 銷毀而消失。
+          printf '127.0.0.1 keycloak\n127.0.0.1 minio\n' | sudo tee -a /etc/hosts >/dev/null
+          getent hosts keycloak minio
+
+      - name: 安裝 Go 1.25.0 工具鏈（雜湊驗證）
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o go1.25.0.linux-amd64.tar.gz https://go.dev/dl/go1.25.0.linux-amd64.tar.gz
+          echo "2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613  go1.25.0.linux-amd64.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/go-toolchain"
+          tar -C "$HOME/go-toolchain" --strip-components=1 -xzf go1.25.0.linux-amd64.tar.gz
+          {
+            echo "PATH=$HOME/go-toolchain/bin:$PATH"
+            echo "GOTOOLCHAIN=local"
+            echo "GOFLAGS=-mod=readonly"
+          } >> "$GITHUB_ENV"
+          "$HOME/go-toolchain/bin/go" version | tee "$EVIDENCE_DIR/go-version.txt"
+
+      - name: Stage 2——映像 digest 覆核與建置（S2-6／S2-7）
+        run: |
+          cd "$ETHER_ROOT"
+          # S2-7／§9.1 第 4 項：pgvector 固定映像 digest 覆核，不符即停下，
+          # 不得自行換標籤、換基底或採用其他映像。
+          docker buildx imagetools inspect 'pgvector/pgvector:0.8.7-pg16-bookworm@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f' > "$EVIDENCE_DIR/pgvector-inspect.txt"
+          grep -q 'sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f' "$EVIDENCE_DIR/pgvector-inspect.txt"
+          # 其餘映像只記錄實際 digest（浮動 tag 屬 G-04 追蹤範圍，本次不更動、
+          # 不以浮動 tag 不符為由失敗；digest 不一致時記錄於報告範本）。
+          for image in 'traefik:v3' 'valkey/valkey:8' 'nats:2' 'minio/minio' 'getmeili/meilisearch:v1' 'openbao/openbao' 'quay.io/keycloak/keycloak:26' 'prom/prometheus' 'grafana/grafana' 'grafana/loki' 'glitchtip/glitchtip'; do
+            docker buildx imagetools inspect "$image" > "$EVIDENCE_DIR/inspect-$(echo "$image" | tr '/:' '__').txt" 2>&1 || echo "inspect 失敗：$image（記錄於證據檔，不阻塞）" >&2
+          done
+          # S2-6：三個 Docker Build Context 分別建置。
+          docker compose build api realtime-gateway worker 2>&1 | tee "$EVIDENCE_DIR/stage-2-build.txt"
+          # S2-6 負向 context 檢查：gateway／worker 映像不得含 api 服務檔案。
+          test "$(docker run --rm --entrypoint /bin/sh ether-realtime-gateway:dev -c 'ls -1 /app')" = "realtime-gateway"
+          test "$(docker run --rm --entrypoint /bin/sh ether-worker:dev -c 'ls -1 /app')" = "worker"
+          test "$(docker run --rm --entrypoint /bin/sh ether-api:dev -c 'ls -1 /app' | sort | tr '\n' ' ')" = "api migrate "
+          # S2-7：獨立一次性容器驗證 pgvector 擴充可用但未安裝（EXECUTION_PLAN §6
+          # 原定程序；探測密碼為本次 run 隨機值，tmpfs 資料目錄、不掛載專案
+          # volume、不發布主機埠、--network none；不執行 CREATE EXTENSION）。
+          docker run --rm -d --name ether-pgvector-probe --network none \
+            --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=256m \
+            -e "POSTGRES_PASSWORD=$CI_POSTGRES_PASSWORD" -e POSTGRES_DB=probe \
+            'pgvector/pgvector:0.8.7-pg16-bookworm@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f'
+          ready=0; for i in $(seq 1 30); do if docker exec ether-pgvector-probe pg_isready -U postgres; then ready=1; break; fi; sleep 2; done; test "$ready" = 1
+          docker exec ether-pgvector-probe psql -U postgres -d probe -c "SELECT name, default_version, installed_version FROM pg_available_extensions WHERE name = 'vector';" | tee "$EVIDENCE_DIR/stage-2-pgvector-probe.txt"
+          grep -q 'vector' "$EVIDENCE_DIR/stage-2-pgvector-probe.txt"
+          docker stop ether-pgvector-probe
+          test -z "$(docker ps -a -q --filter name=ether-pgvector-probe)"
+          jq -n '{stage:"stage-2",status:"PASS",detail:"pgvector digest 覆核一致；三映像建置成功；context 負向檢查通過；pgvector 探測完成。"}' > "$EVIDENCE_DIR/outcomes/stage-2.json"
+
+      - name: Stage 3——Compose 設定渲染（S1-2）
+        run: |
+          cd "$ETHER_ROOT"
+          docker compose version | tee "$EVIDENCE_DIR/compose-version.txt"
+          docker compose config > "$EVIDENCE_DIR/compose-config-default.yml"
+          docker compose --profile phase07 config > "$EVIDENCE_DIR/compose-config-phase07.yml"
+          # 預設渲染檢查點：三應用服務 build 段、無 qdrant、prometheus 掛載存在、
+          # postgresql image 為 §9 固定映像字串。
+          grep -q 'qdrant' "$EVIDENCE_DIR/compose-config-default.yml" && { echo "::error::預設渲染仍含 qdrant。" >&2; exit 1; } || true
+          grep -q 'pgvector/pgvector:0.8.7-pg16-bookworm@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f' "$EVIDENCE_DIR/compose-config-default.yml"
+          grep -q 'prometheus.yml' "$EVIDENCE_DIR/compose-config-default.yml"
+          # phase07 渲染：含 livekit、含 profiles、無 livekit.yaml 掛載。
+          grep -q 'livekit' "$EVIDENCE_DIR/compose-config-phase07.yml"
+          grep -q 'phase07' "$EVIDENCE_DIR/compose-config-phase07.yml"
+          if grep -q 'livekit.yaml' "$EVIDENCE_DIR/compose-config-phase07.yml"; then echo "::error::phase07 渲染含 livekit.yaml 掛載。" >&2; exit 1; fi
+          # 注意（EXECUTION_PLAN S1-2）：預設渲染是否含 livekit 不得直接認定
+          # profile 隔離失敗；隔離成敗只以 S3-9 實際容器狀態判定（見 platform-checks）。
+          jq -n '{stage:"stage-3",status:"PASS",detail:"雙流程 config 渲染檢查點通過；隔離判定留待實際容器狀態。"}' > "$EVIDENCE_DIR/outcomes/stage-3.json"
+
+      - name: Stage 4——啟動真實服務並逐項健康檢查
+        run: |
+          cd "$ETHER_ROOT"
+          # 先只啟動資料層：Keycloak 需專屬資料庫（keycloak），須在啟動
+          # Keycloak 前於全新 PostgreSQL 內建立；MinIO bucket 由程式碼
+          # 側建立（見下一步），api 啟動前須已存在。
+          docker compose up -d postgresql valkey nats minio meilisearch
+          for i in $(seq 1 30); do
+            if docker compose exec -T postgresql pg_isready -U ether -d ether; then break; fi
+            sleep 2; test "$i" -lt 30
+          done
+          docker compose exec -T postgresql psql -U ether -d ether -tc "SELECT 1 FROM pg_database WHERE datname='keycloak';" | grep -q 1 || docker compose exec -T postgresql createdb -U ether keycloak
+          docker compose exec -T valkey valkey-cli ping | grep -q PONG
+          curl -fsS http://localhost:8222/healthz | tee "$EVIDENCE_DIR/stage-4-nats-health.json"
+          curl -fsS http://localhost:9000/minio/health/ready
+          curl -fsS http://localhost:7700/health | tee "$EVIDENCE_DIR/stage-4-meilisearch-health.json"
+          # MinIO bucket：程式碼不自動建 bucket，以 S3 API（SigV4，標準庫
+          # Python）建立本次專屬 bucket；憑證取自環境變數，不寫入檔案。
+          MINIO_TEST_ENDPOINT="http://minio:9000" python3 - "$CI_MINIO_BUCKET" <<'PYEOF'
+          import hashlib, hmac, os, sys, urllib.request
+          from datetime import datetime, timezone
+          bucket = sys.argv[1]
+          access = os.environ["MINIO_ROOT_USER"]; secret = os.environ["MINIO_ROOT_PASSWORD"]
+          now = datetime.now(timezone.utc); amz = now.strftime("%Y%m%dT%H%M%SZ"); stamp = now.strftime("%Y%m%d")
+          scope = f"{stamp}/us-east-1/s3/aws4_request"
+          def sign(key, msg):
+              return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+          k = sign(("AWS4" + secret).encode(), stamp); k = sign(k, "us-east-1"); k = sign(k, "s3"); k = sign(k, "aws4_request")
+          payload_hash = hashlib.sha256(b"").hexdigest()
+          canonical = f"PUT\n/{bucket}/\n\nhost:minio:9000\n\nhost\n{payload_hash}"
+          string_to_sign = f"AWS4-HMAC-SHA256\n{amz}\n{scope}\n{hashlib.sha256(canonical.encode()).hexdigest()}"
+          sig = hmac.new(k, string_to_sign.encode(), hashlib.sha256).hexdigest()
+          req = urllib.request.Request(f"http://minio:9000/{bucket}/", method="PUT", data=b"")
+          req.add_header("Authorization", f"AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders=host, Signature={sig}")
+          req.add_header("X-Amz-Date", amz); req.add_header("X-Amz-Content-Sha256", payload_hash)
+          with urllib.request.urlopen(req) as resp:
+              assert resp.status in (200, 201), resp.status
+          print("bucket 已建立：", bucket)
+          PYEOF
+          # NATS JetStream Stream：Relay 發佈者不自動建 Stream，部署方須預建。
+          # 以一次性 Go 小程式（/tmp，不入 Repository）經 nats.go 建立
+          # Stream ETHER_EVENTS（subjects ether.events.>）；此為部署前置，
+          # 不是驗證邏輯，驗證本身一律經 api Relay／消費迴圈開關。
+          mkdir -p "$RUNNER_TEMP/nats-setup"
+          cat > "$RUNNER_TEMP/nats-setup/go.mod" <<'GOEOF'
+          module ether-ci-nats-setup
+
+          go 1.25.0
+
+          require github.com/nats-io/nats.go v1.52.0
+          GOEOF
+          cat > "$RUNNER_TEMP/nats-setup/main.go" <<'GOEOF'
+          package main
+
+          import (
+              "fmt"
+              "os"
+
+              "github.com/nats-io/nats.go"
+          )
+
+          func main() {
+              nc, err := nats.Connect("nats://localhost:4222")
+              if err != nil {
+                  fmt.Fprintln(os.Stderr, err)
+                  os.Exit(1)
+              }
+              defer nc.Close()
+              js, err := nc.JetStream()
+              if err != nil {
+                  fmt.Fprintln(os.Stderr, err)
+                  os.Exit(1)
+              }
+              _, err = js.AddStream(&nats.StreamConfig{Name: "ETHER_EVENTS", Subjects: []string{"ether.events.>"}, Storage: nats.FileStorage})
+              if err != nil {
+                  fmt.Fprintln(os.Stderr, err)
+                  os.Exit(1)
+              }
+              fmt.Println("stream ETHER_EVENTS 已建立")
+          }
+          GOEOF
+          cd "$RUNNER_TEMP/nats-setup" && GOFLAGS=-mod=mod go mod tidy >/dev/null && go run . | tee "$EVIDENCE_DIR/stage-4-nats-stream.txt"
+          cd "$ETHER_ROOT"
+          # 再啟動 Keycloak 與應用服務（keycloak 資料庫已備妥）。
+          docker compose up -d keycloak api realtime-gateway worker
+          # 逐項健康檢查：不得只以容器 Running 判定，須以服務端點回應為準。
+          for i in $(seq 1 60); do
+            if curl -fsS http://keycloak:8080/health/ready >/dev/null 2>&1; then break; fi
+            sleep 5; test "$i" -lt 60
+          done
+          curl -fsS http://keycloak:8080/health/ready | tee "$EVIDENCE_DIR/stage-4-keycloak-health.json"
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then break; fi
+            sleep 5; test "$i" -lt 60
+          done
+          curl -fsS http://localhost:8080/healthz | tee "$EVIDENCE_DIR/stage-4-api-health.json"
+          curl -fsS http://localhost:8081/healthz | tee "$EVIDENCE_DIR/stage-4-gateway-health.json"
+          docker compose ps --format json | tee "$EVIDENCE_DIR/stage-4-ps.json"
+          # api 日誌須明示 Relay／消費迴圈已啟動（開關見 override）。
+          docker compose logs --no-color api > "$EVIDENCE_DIR/stage-4-api-logs.txt"
+          grep -q 'Relay 發佈迴圈已啟動' "$EVIDENCE_DIR/stage-4-api-logs.txt"
+          grep -q '搜尋索引消費迴圈已啟動' "$EVIDENCE_DIR/stage-4-api-logs.txt"
+          grep -q '物件儲存為 MinIO' "$EVIDENCE_DIR/stage-4-api-logs.txt"
+          grep -q '搜尋索引為 Meilisearch' "$EVIDENCE_DIR/stage-4-api-logs.txt"
+          jq -n '{stage:"stage-4",status:"PASS",detail:"9 項服務皆以服務端點健康檢查確認；Stream 與 bucket 已預建。"}' > "$EVIDENCE_DIR/outcomes/stage-4.json"
+
+      - name: Stage 5——Migration 實機套用與資料庫整合測試
+        run: |
+          cd "$ETHER_ROOT"
+          # cmd/migrate 內嵌於 api 映像（/app/migrate）；以 compose run
+          # --no-deps 執行，不另起依賴容器。DSN 由 compose 環境組裝，
+          # 不得印出、不得寫入檔案。
+          docker compose run --rm --no-deps --entrypoint /app/migrate api status | tee "$EVIDENCE_DIR/stage-5-migrate-status-before.txt"
+          docker compose run --rm --no-deps --entrypoint /app/migrate api up | tee "$EVIDENCE_DIR/stage-5-migrate-up.txt"
+          docker compose run --rm --no-deps --entrypoint /app/migrate api status | tee "$EVIDENCE_DIR/stage-5-migrate-status-after.txt"
+          grep -q '000014' "$EVIDENCE_DIR/stage-5-migrate-status-after.txt"
+          # 14 個版本皆已套用、無待套用版本（狀態輸出格式見 cmd/migrate）。
+          grep -q '未套用: \[\]' "$EVIDENCE_DIR/stage-5-migrate-status-after.txt"
+          # S2-7 查詢的實機對照：vector 擴充可用、未安裝（不得 CREATE EXTENSION）。
+          docker compose exec -T postgresql psql -U ether -d ether -c "SELECT name, default_version, installed_version FROM pg_available_extensions WHERE name = 'vector';" | tee "$EVIDENCE_DIR/stage-5-pgvector-available.txt"
+          # 資料表／索引／外鍵／唯一約束抽查（000002 六表＋000006 五表＋
+          # 000009 outbox 表＋schema_migrations 記帳表皆須存在）。
+          docker compose exec -T postgresql psql -U ether -d ether -tc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" | tee "$EVIDENCE_DIR/stage-5-table-count.txt"
+          for table in users user_profiles user_devices user_sessions conversations messages message_outbox schema_migrations; do
+            docker compose exec -T postgresql psql -U ether -d ether -tc "SELECT to_regclass('public.$table');" | grep -q "$table"
+          done
+          # 資料庫整合測試（integration tag；無 ETHER_TEST_DATABASE_URL 即
+          # 跳過——此處已設定，故跳過即為異常）。Session 輪換／重放持久化
+          # 由 TestPG_SessionLifecycleAndReplayPersists 覆蓋（HTTP 層無
+          # 輪換端點，不得以 HTTP 冒充，見 Stage 7 註記）。
+          export ETHER_TEST_DATABASE_URL="postgres://ether:${CI_POSTGRES_PASSWORD}@localhost:5432/ether?sslmode=disable"
+          export ETHER_TEST_NATS_URL="nats://localhost:4222"
+          export ETHER_TEST_MEILISEARCH_URL="http://localhost:7700"
+          export ETHER_TEST_MEILISEARCH_API_KEY="$CI_MEILI_MASTER_KEY"
+          export MINIO_TEST_ENDPOINT="http://localhost:9000"
+          export MINIO_TEST_BUCKET="$CI_MINIO_BUCKET"
+          export MINIO_TEST_ACCESS_KEY="$MINIO_ROOT_USER"
+          export MINIO_TEST_SECRET_KEY="$CI_MINIO_ROOT_PASSWORD"
+          cd "$ETHER_ROOT/services/api"
+          go test -tags integration -count=1 ./... 2>&1 | tee "$EVIDENCE_DIR/stage-5-integration-tests.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          jq -n '{stage:"stage-5",status:"PASS",detail:"migration 000001–000014 全部套用；資料庫整合測試通過。"}' > "$EVIDENCE_DIR/outcomes/stage-5.json"
+
+      - name: Stage 6——Keycloak 實機 OIDC（direct grant＋授權碼嘗試）
+        run: |
+          cd "$ETHER_ROOT"
+          KC="http://keycloak:8080"
+          CI_TOKENS="$RUNNER_TEMP/ether-ci"
+          # 管理員 token（僅存於 shell 變數，不得印出、不得寫入日誌）。
+          ADMIN_TOKEN="$(curl -fsS -X POST "$KC/realms/master/protocol/openid-connect/token" \
+            -d 'grant_type=password' -d 'client_id=admin-cli' \
+            -d "username=$KEYCLOAK_ADMIN" -d "password=$KEYCLOAK_ADMIN_PASSWORD" | jq -r '.access_token')"
+          test -n "$ADMIN_TOKEN" && test "$ADMIN_TOKEN" != "null"
+          echo "::add-mask::$ADMIN_TOKEN"
+          # 匯入 Realm 範本（範本檔不改）：以 jq 在記憶體內改寫 realm 名為
+          # 本次專屬 realm，並 POST 至 Admin API。409 表示 realm 已存在，
+          # 在新 Runner 上屬異常，停止。
+          jq --arg realm "$CI_REALM" '.realm = $realm' \
+            "$ETHER_ROOT/infrastructure/docker/keycloak/realm-ether.template.json" > "$CI_TOKENS/realm-import.json"
+          IMPORT_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$KC/admin/realms" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+            --data @"$CI_TOKENS/realm-import.json")"
+          test "$IMPORT_STATUS" = "201"
+          # 建立測試使用者 A／B（虛構資料，example.invalid 網域）。
+          for who in a b; do
+            if [ "$who" = "a" ]; then U="ci-user-a"; E="ci-a@example.invalid"; P="$CI_USER_A_PASSWORD"; else U="ci-user-b"; E="ci-b@example.invalid"; P="$CI_USER_B_PASSWORD"; fi
+            jq -n --arg u "$U" --arg e "$E" --arg p "$P" \
+              '{username:$u,email:$e,enabled:true,emailVerified:true,credentials:[{type:"password",value:$p,temporary:false}]}' \
+              > "$CI_TOKENS/user-$who.json"
+            test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$KC/admin/realms/$CI_REALM/users" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+              --data @"$CI_TOKENS/user-$who.json")" = "201"
+          done
+          # 建立本次專用 direct grant client（僅 disposable realm 內），並為
+          # 該 client 與 ether-web 加上 audience mapper（aud 須含 ether-api，
+          # 見 KEYCLOAK_INTEGRATION.md §4 第 4 項）。
+          jq -n '{clientId:"ether-ci-direct",publicClient:true,enabled:true,directAccessGrantsEnabled:true,standardFlowEnabled:false,implicitFlowEnabled:false,serviceAccountsEnabled:false}' \
+            > "$CI_TOKENS/ci-client.json"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$KC/admin/realms/$CI_REALM/clients" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+            --data @"$CI_TOKENS/ci-client.json")" = "201"
+          add_audience_mapper() {
+            local client_id="$1"
+            local uuid
+            uuid="$(curl -fsS "$KC/admin/realms/$CI_REALM/clients?clientId=$client_id" -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r '.[0].id')"
+            jq -n '{name:"ether-api-audience",protocol:"openid-connect",protocolMapper:"oidc-audience-mapper",config:{"included.client.audience":"ether-api","id.token.claim":"false","access.token.claim":"true"}}' \
+              > "$CI_TOKENS/mapper.json"
+            test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$KC/admin/realms/$CI_REALM/clients/$uuid/protocol-mappers/models" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+              --data @"$CI_TOKENS/mapper.json")" = "201"
+          }
+          add_audience_mapper "ether-ci-direct"
+          add_audience_mapper "ether-web"
+          # Direct grant 取 token（僅供後續步驟，寫入 600 權限檔案於
+          # $RUNNER_TEMP，清理步驟刪除；不得寫入 Repository、不得印出）。
+          get_token() {
+            local user="$1" pass="$2" out="$3"
+            local resp access refresh
+            resp="$(curl -fsS -X POST "$KC/realms/$CI_REALM/protocol/openid-connect/token" \
+              -d 'grant_type=password' -d 'client_id=ether-ci-direct' \
+              -d "username=$user" -d "password=$pass")"
+            access="$(printf '%s' "$resp" | jq -r '.access_token')"
+            refresh="$(printf '%s' "$resp" | jq -r '.refresh_token')"
+            echo "::add-mask::$access"; echo "::add-mask::$refresh"
+            printf '%s' "$access" > "$out.access"; printf '%s' "$refresh" > "$out.refresh"
+            chmod 600 "$out.access" "$out.refresh"
+          }
+          get_token "ci-user-a" "$CI_USER_A_PASSWORD" "$CI_TOKENS/token-a"
+          get_token "ci-user-b" "$CI_USER_B_PASSWORD" "$CI_TOKENS/token-b"
+          # Token 須為三段式 JWT，不得為 null 或錯誤回應殘值。
+          for token_file in "$CI_TOKENS/token-a.access" "$CI_TOKENS/token-b.access"; do
+            grep -qE '^[^.]+\.[^.]+\.[^.]+$' "$token_file"
+          done
+          # discovery issuer 須與 api 設定完全一致；token 的 aud 須含 ether-api。
+          curl -fsS "$KC/realms/$CI_REALM/.well-known/openid-configuration" | tee "$EVIDENCE_DIR/stage-6-discovery.json" | jq -r '.issuer' | grep -qx "$KC/realms/$CI_REALM"
+          python3 -c "import base64,json,sys; p=json.loads(base64.urlsafe_b64decode(sys.argv[1].split('.')[1]+'==')); aud=p.get('aud',[]); assert 'ether-api' in (aud if isinstance(aud,list) else [aud]), aud; print('aud 含 ether-api；iss:', p.get('iss'))" "$(cat "$CI_TOKENS/token-a.access")" | tee "$EVIDENCE_DIR/stage-6-token-claims.txt"
+          # TestLiveKeycloak（integration tag）：discovery／JWKS／真實 token 驗證。
+          cd "$ETHER_ROOT/services/api"
+          KEYCLOAK_TEST_ISSUER="$KC/realms/$CI_REALM" \
+          KEYCLOAK_TEST_TOKEN="$(cat "$CI_TOKENS/token-a.access")" \
+          KEYCLOAK_TEST_AUDIENCE="ether-api" \
+          go test -tags integration -count=1 -run 'TestLiveKeycloak' ./internal/auth/ 2>&1 | tee "$EVIDENCE_DIR/stage-6-live-keycloak-tests.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          # 換發與重放觀察（僅記錄觀察結果，不得以觀察代替 ETHER Session
+          # 輪換證明；realm 預設是否撤銷舊 refresh token 取決於 realm 設定，
+          # 本步驟不對重放結果做通過／失敗斷言）。
+          REFRESHED="$(curl -sS -X POST "$KC/realms/$CI_REALM/protocol/openid-connect/token" \
+            -d 'grant_type=refresh_token' -d 'client_id=ether-ci-direct' \
+            -d "refresh_token=$(cat "$CI_TOKENS/token-a.refresh")")"
+          printf '%s' "$REFRESHED" | jq -r '.access_token // empty' > "$CI_TOKENS/token-a-refreshed.access"
+          REUSE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$KC/realms/$CI_REALM/protocol/openid-connect/token" \
+            -d 'grant_type=refresh_token' -d 'client_id=ether-ci-direct' \
+            -d "refresh_token=$(cat "$CI_TOKENS/token-a.refresh")")"
+          # 無效／竄改 token 呼叫 api 須回 401。
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/auth/me -H 'Authorization: Bearer invalid.invalid.invalid')" = "401"
+          jq -n --arg reuse "$REUSE_STATUS" '{stage:"stage-6-direct-grant",status:"PASS",detail:"Realm 匯入、雙使用者、direct grant、discovery、aud、TestLiveKeycloak 皆通過。",refresh_reuse_observed_status:$reuse}' > "$EVIDENCE_DIR/outcomes/stage-6-direct-grant.json"
+          # 登出（Keycloak 端）：以換發後的 refresh token 登出，記錄狀態碼。
+          curl -sS -o /dev/null -w '%{http_code}' -X POST "$KC/realms/$CI_REALM/protocol/openid-connect/logout" \
+            -d 'client_id=ether-ci-direct' -d "refresh_token=$(printf '%s' "$REFRESHED" | jq -r '.refresh_token')" | tee "$EVIDENCE_DIR/stage-6-logout-status.txt"
+
+      - name: Stage 6b——授權碼＋PKCE 流程嘗試（腳本化，失敗記 NOT VERIFIED）
+        continue-on-error: true
+        run: |
+          # 腳本化授權碼流程天生脆弱（登入表單結構隨 Keycloak 版本而變）：
+          # 本步驟只做一次誠實嘗試，失敗時寫入 NOT VERIFIED 附原因，絕不
+          # 以 direct grant 結果冒充授權碼流程通過，也不得因此判定整 run 失敗。
+          KC="http://keycloak:8080"; CI_TOKENS="$RUNNER_TEMP/ether-ci"
+          python3 - <<'PYEOF' > "$CI_TOKENS/pkce.txt"
+          import base64, hashlib, secrets
+          verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
+          challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+          print(verifier); print(challenge)
+          PYEOF
+          read -r VERIFIER CHALLENGE < <(tr '\n' ' ' < "$CI_TOKENS/pkce.txt")
+          STATE="ether-ci-$(openssl rand -hex 8)"
+          AUTH_URL="$KC/realms/$CI_REALM/protocol/openid-connect/auth?client_id=ether-web&response_type=code&scope=openid&redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&state=$STATE&code_challenge=$CHALLENGE&code_challenge_method=S256"
+          PKCE_OUTCOME="NOT VERIFIED"
+          PKCE_REASON="未取得授權碼（登入表單解析或憑證提交失敗）"
+          curl -sS -c "$CI_TOKENS/pkce-cookies.txt" -D "$CI_TOKENS/pkce-auth.headers" -o "$CI_TOKENS/pkce-login.html" "$AUTH_URL" || true
+          FORM_ACTION="$(grep -o 'action="[^"]*"' "$CI_TOKENS/pkce-login.html" | head -n 1 | sed 's/action="//; s/"$//; s/&amp;/\&/g' || true)"
+          if [ -n "$FORM_ACTION" ]; then
+            case "$FORM_ACTION" in http*) LOGIN_URL="$FORM_ACTION";; *) LOGIN_URL="$KC$FORM_ACTION";; esac
+            curl -sS -b "$CI_TOKENS/pkce-cookies.txt" -c "$CI_TOKENS/pkce-cookies.txt" -D "$CI_TOKENS/pkce-submit.headers" -o /dev/null \
+              --data-urlencode "username=ci-user-a" --data-urlencode "password=$CI_USER_A_PASSWORD" --data-urlencode "credentialId=" \
+              "$LOGIN_URL" || true
+            LOCATION="$(grep -i '^location:' "$CI_TOKENS/pkce-submit.headers" | tr -d '\r' | sed 's/^[Ll]ocation: //' | head -n 1 || true)"
+            CODE="$(printf '%s' "$LOCATION" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p' || true)"
+            if [ -n "$CODE" ]; then
+              TOKEN_RESP="$(curl -sS -X POST "$KC/realms/$CI_REALM/protocol/openid-connect/token" \
+                -d 'grant_type=authorization_code' -d "code=$CODE" \
+                -d 'redirect_uri=http://localhost:5173/callback' -d 'client_id=ether-web' -d "code_verifier=$VERIFIER" || true)"
+              if printf '%s' "$TOKEN_RESP" | jq -e '.access_token' >/dev/null 2>&1; then
+                PKCE_TOKEN="$(printf '%s' "$TOKEN_RESP" | jq -r '.access_token')"
+                echo "::add-mask::$PKCE_TOKEN"
+                ME_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/auth/me -H "Authorization: Bearer $PKCE_TOKEN")"
+                if [ "$ME_STATUS" = "200" ]; then PKCE_OUTCOME="PASS"; PKCE_REASON="授權碼＋PKCE 交換成功，且 /auth/me 回 200。"; fi
+              else
+                PKCE_REASON="授權碼交換失敗：$(printf '%s' "$TOKEN_RESP" | jq -r '.error // "unknown"' 2>/dev/null || echo unknown)"
+              fi
+            fi
+          fi
+          jq -n --arg status "$PKCE_OUTCOME" --arg reason "$PKCE_REASON" '{stage:"stage-6-pkce",status:$status,detail:$reason}' > "$EVIDENCE_DIR/outcomes/stage-6-pkce.json"
+          echo "PKCE 流程結果：$PKCE_OUTCOME——$PKCE_REASON"
+
+      - name: Stage 7——雙帳號互動（好友／對話／訊息／裝置／工作階段）
+        run: |
+          cd "$ETHER_ROOT"
+          API="http://localhost:8080/api/v1"
+          CI_TOKENS="$RUNNER_TEMP/ether-ci"
+          TOKEN_A="$(cat "$CI_TOKENS/token-a.access")"; TOKEN_B="$(cat "$CI_TOKENS/token-b.access")"
+          api_a() { curl -fsS -H "Authorization: Bearer $TOKEN_A" "$@"; }
+          api_b() { curl -fsS -H "Authorization: Bearer $TOKEN_B" "$@"; }
+          # 各自 /auth/me：帳號建置成功、再次呼叫不重複建帳號（同一 user_id）。
+          USER_A="$(api_a "$API/auth/me" | tee "$EVIDENCE_DIR/stage-7-me-a.json" | jq -r '.user_id')"
+          USER_B="$(api_b "$API/auth/me" | tee "$EVIDENCE_DIR/stage-7-me-b.json" | jq -r '.user_id')"
+          test -n "$USER_A" && test -n "$USER_B" && test "$USER_A" != "$USER_B"
+          test "$(api_a "$API/auth/me" | jq -r '.user_id')" = "$USER_A"
+          # 裝置：登記→清單持久化→撤銷（device_identifier_hash 須為 64-hex，
+          # 由本次隨機值雜湊產生，不得送原始識別碼）。
+          DEV_HASH="$(printf '%s' "ci-device-a-$(openssl rand -hex 16)" | sha256sum | cut -d' ' -f1)"
+          BEFORE="$(api_a "$API/auth/devices" | jq 'length')"
+          DEVICE_ID="$(api_a -X POST "$API/auth/devices" -H 'Content-Type: application/json' \
+            -d "{\"device_name\":\"ci-device-a\",\"platform\":\"ci\",\"device_identifier_hash\":\"$DEV_HASH\"}" | tee "$EVIDENCE_DIR/stage-7-device.json" | jq -r '.device_id')"
+          test -n "$DEVICE_ID" && test "$DEVICE_ID" != "null"
+          test "$(api_a "$API/auth/devices" | jq 'length')" = "$((BEFORE + 1))"
+          api_a -X POST "$API/auth/devices/$DEVICE_ID/revoke" | tee "$EVIDENCE_DIR/stage-7-device-revoke.json" | jq -e '.is_revoked == true or .revoked == true' >/dev/null || echo "裝置撤銷回應欄位與預期不同，記錄於證據檔（不阻塞）" >&2
+          # 工作階段：清單端點須回 200。若清單為空，撤銷檢查記 NOT VERIFIED——
+          # HTTP 層沒有建立 Session 的端點（Session 由登入流程外建立），不得
+          # 憑空捏造 session_id；輪換／重放持久化由 Stage 5 的
+          # TestPG_SessionLifecycleAndReplayPersists 覆蓋。
+          SESSIONS="$(api_a "$API/auth/sessions" | tee "$EVIDENCE_DIR/stage-7-sessions-a.json")"
+          if [ "$(printf '%s' "$SESSIONS" | jq 'length')" -gt 0 ]; then
+            SID="$(printf '%s' "$SESSIONS" | jq -r '.[0].session_id')"
+            api_a -X POST "$API/auth/sessions/$SID/revoke" | jq -e '.is_revoked == true' >/dev/null
+            api_a "$API/auth/sessions" | jq -e --arg sid "$SID" '.[] | select(.session_id == $sid) | .is_revoked == true' >/dev/null
+            # 越權：B 撤銷 A 的 session 須回 404（不得洩漏存在性）。
+            test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$API/auth/sessions/$SID/revoke" -H "Authorization: Bearer $TOKEN_B")" = "404"
+            SESSION_STATUS="PASS"
+          else
+            SESSION_STATUS="NOT VERIFIED"
+          fi
+          jq -n --arg s "$SESSION_STATUS" '{stage:"stage-7-sessions",status:$s,detail:"HTTP 層無 Session 建立端點；清單為空時撤銷檢查無法執行，輪換／重放由 Go 整合測試覆蓋。"}' > "$EVIDENCE_DIR/outcomes/stage-7-sessions.json"
+          # 好友：A 邀請 B（addressee_id）、B 接受，雙方皆為好友。
+          REQ_ID="$(api_a -X POST "$API/friends/requests" -H 'Content-Type: application/json' \
+            -d "{\"addressee_id\":\"$USER_B\",\"message\":\"\"}" | tee "$EVIDENCE_DIR/stage-7-friend-request.json" | jq -r '.request_id')"
+          api_b "$API/friends/requests" | jq -e --arg rid "$REQ_ID" '.[] | select(.request_id == $rid)' >/dev/null
+          api_b -X POST "$API/friends/requests/$REQ_ID/accept" | tee "$EVIDENCE_DIR/stage-7-friend-accept.json" | jq -e '.status == "accepted"' >/dev/null
+          api_a "$API/friends" | jq -e --arg uid "$USER_B" '.[] | select(.friend_id == $uid)' >/dev/null
+          # 對話與訊息：建 DM（需好友關係，見上）、A 發送、B 讀取、持久化
+          # （重查仍在）；B 無權讀取 A 的單人對話（404）；B 離線重連後
+          # （以新 direct grant token）仍可讀取歷史。
+          CONV_ID="$(api_a -X POST "$API/conversations" -H 'Content-Type: application/json' \
+            -d "{\"type\":\"direct\",\"other_user_id\":\"$USER_B\"}" | tee "$EVIDENCE_DIR/stage-7-conversation.json" | jq -r '.conversation_id')"
+          UNIQUE="ether-ci-$(openssl rand -hex 8)"
+          MSG_ID="$(api_a -X POST "$API/conversations/$CONV_ID/messages" -H 'Content-Type: application/json' \
+            -d "{\"kind\":\"text\",\"content\":\"$UNIQUE\",\"client_message_id\":\"$UNIQUE\"}" | tee "$EVIDENCE_DIR/stage-7-message.json" | jq -r '.message_id')"
+          api_b "$API/conversations/$CONV_ID/messages" | tee "$EVIDENCE_DIR/stage-7-messages-b.json" | jq -e --arg mid "$MSG_ID" '.messages // . | .. | select(.message_id? == $mid)' >/dev/null
+          GROUP_ID="$(api_a -X POST "$API/conversations" -H 'Content-Type: application/json' \
+            -d "{\"type\":\"group\",\"title\":\"ci-only-a\",\"member_ids\":[\"$USER_A\"]}" | jq -r '.conversation_id')"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' "$API/conversations/$GROUP_ID" -H "Authorization: Bearer $TOKEN_B")" = "404"
+          jq -n '{stage:"stage-7",status:"PASS",detail:"雙帳號 Profile／裝置／好友／DM／訊息持久化／權限隔離皆通過。"}' > "$EVIDENCE_DIR/outcomes/stage-7.json"
+
+      - name: Stage 8——NATS JetStream（經 Relay／消費迴圈＋監控 API）
+        run: |
+          cd "$ETHER_ROOT"
+          # 不得自創測試程式發佈事件：驗證一律經 api 的 Relay（發送訊息
+          # 寫 Outbox→Relay 發佈）與 NATS 監控 API 讀取 Stream 狀態。
+          BEFORE="$(curl -fsS 'http://localhost:8222/jsz?streams=true&config=true' | jq -r '.streams[] | select(.name == "ETHER_EVENTS") | .messages')"
+          # 再發一則訊息，觸發 Outbox→Relay→JetStream。
+          API="http://localhost:8080/api/v1"
+          TOKEN_A="$(cat "$RUNNER_TEMP/ether-ci/token-a.access")"
+          CONV_ID="$(curl -fsS "$API/conversations" -H "Authorization: Bearer $TOKEN_A" | jq -r '.[0].conversation_id')"
+          UNIQUE8="ether-ci-nats-$(openssl rand -hex 8)"
+          curl -fsS -X POST "$API/conversations/$CONV_ID/messages" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+            -d "{\"kind\":\"text\",\"content\":\"$UNIQUE8\",\"client_message_id\":\"$UNIQUE8\"}" >/dev/null
+          AFTER=""
+          for i in $(seq 1 12); do
+            sleep 5
+            AFTER="$(curl -fsS 'http://localhost:8222/jsz?streams=true&config=true' | jq -r '.streams[] | select(.name == "ETHER_EVENTS") | .messages')"
+            if [ "$AFTER" -gt "$BEFORE" ]; then break; fi
+          done
+          test "$AFTER" -gt "$BEFORE"
+          curl -fsS 'http://localhost:8222/jsz?streams=true&consumers=true&config=true' | tee "$EVIDENCE_DIR/stage-8-jsz.json" | jq -e '.streams[] | select(.name == "ETHER_EVENTS")' >/dev/null
+          # 消費端 durable 存在性只記錄（訂閱由 api 行程建立；缺失時記
+          # NOT VERIFIED，不得以監控 API 查詢方式不同冒充失敗）。
+          if grep -q 'ether-search-indexer' "$EVIDENCE_DIR/stage-8-jsz.json"; then CONSUMER_STATUS="PASS"; else CONSUMER_STATUS="NOT VERIFIED"; fi
+          jq -n --arg before "$BEFORE" --arg after "$AFTER" --arg consumer "$CONSUMER_STATUS" \
+            '{stage:"stage-8",status:"PASS",detail:"發送訊息後 Stream 訊息數增加（發佈鏈路通）。",messages_before:($before|tonumber),messages_after:($after|tonumber),consumer_status:$consumer}' \
+            > "$EVIDENCE_DIR/outcomes/stage-8.json"
+
+      - name: Stage 9——Meilisearch（經消費迴圈＋HTTP API）
+        run: |
+          API="http://localhost:8080/api/v1"
+          TOKEN_A="$(cat "$RUNNER_TEMP/ether-ci/token-a.access")"
+          MEILI="http://localhost:7700"
+          MEILI_AUTH="Authorization: Bearer $CI_MEILI_MASTER_KEY"
+          # 索引須由部署方預建（filterable／sortable 設定見待決定 26；本
+          # run 只建最小索引，設定預建仍列 NOT VERIFIED 於報告範本）。
+          curl -fsS -X PUT "$MEILI/indexes/messages" -H "$MEILI_AUTH" -H 'Content-Type: application/json' -d '{"uid":"messages","primaryKey":"message_id"}' > "$EVIDENCE_DIR/stage-9-index-create.json" || true
+          curl -fsS "$MEILI/indexes/messages" -H "$MEILI_AUTH" | tee "$EVIDENCE_DIR/stage-9-index.json" | jq -e '.uid == "messages"' >/dev/null
+          # Stage 8 的訊息經消費迴圈寫入索引：輪詢搜尋端點直至命中。
+          UNIQUE9="ether-ci-search-$(openssl rand -hex 8)"
+          CONV_ID="$(curl -fsS "$API/conversations" -H "Authorization: Bearer $TOKEN_A" | jq -r '.[0].conversation_id')"
+          MSG_ID="$(curl -fsS -X POST "$API/conversations/$CONV_ID/messages" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+            -d "{\"kind\":\"text\",\"content\":\"$UNIQUE9\",\"client_message_id\":\"$UNIQUE9\"}" | jq -r '.message_id')"
+          FOUND=""
+          for i in $(seq 1 12); do
+            sleep 5
+            FOUND="$(curl -fsS "$API/search/messages?q=$UNIQUE9" -H "Authorization: Bearer $TOKEN_A" | tee "$EVIDENCE_DIR/stage-9-search.json" | jq -r --arg mid "$MSG_ID" '.results[]? | select(.message_id == $mid) | .message_id')"
+            if [ -n "$FOUND" ]; then break; fi
+          done
+          test -n "$FOUND"
+          # 刪除測試文件：經 Meilisearch API 刪除文件，待任務完成後搜尋不到。
+          TASK_UID="$(curl -fsS -X DELETE "$MEILI/indexes/messages/documents/$MSG_ID" -H "$MEILI_AUTH" | jq -r '.taskUid')"
+          for i in $(seq 1 12); do
+            sleep 2
+            if [ "$(curl -fsS "$MEILI/tasks/$TASK_UID" -H "$MEILI_AUTH" | jq -r '.status')" = "succeeded" ]; then break; fi
+          done
+          test -z "$(curl -fsS "$API/search/messages?q=$UNIQUE9" -H "Authorization: Bearer $TOKEN_A" | jq -r '.results[]? | .message_id')"
+          jq -n '{stage:"stage-9",status:"PASS",detail:"消費迴圈寫入索引、搜尋命中、刪除後搜尋不到皆通過。"}' > "$EVIDENCE_DIR/outcomes/stage-9.json"
+
+      - name: Stage 10——MinIO（S3 API＋api presigned 上傳往返）
+        run: |
+          API="http://localhost:8080/api/v1"
+          TOKEN_A="$(cat "$RUNNER_TEMP/ether-ci/token-a.access")"
+          # (a) 直接 S3 API：上傳→下載比對→刪除→刪除後不存在（SigV4，
+          # 標準庫 Python；端點取 minio 主機名，簽名主機不變）。
+          python3 - "$CI_MINIO_BUCKET" "$MINIO_ROOT_USER" "$CI_MINIO_ROOT_PASSWORD" <<'PYEOF' | tee "$EVIDENCE_DIR/stage-10-s3-direct.txt"
+          import hashlib, hmac, os, sys, urllib.error, urllib.request
+          from datetime import datetime, timezone
+          bucket, access, secret = sys.argv[1], sys.argv[2], sys.argv[3]
+          body = b"ether-ci-minio-probe"
+          def call(method, key, data=None):
+              now = datetime.now(timezone.utc); amz = now.strftime("%Y%m%dT%H%M%SZ"); stamp = now.strftime("%Y%m%d")
+              scope = f"{stamp}/us-east-1/s3/aws4_request"
+              payload_hash = hashlib.sha256(data or b"").hexdigest()
+              canonical = f"{method}\n/{bucket}/{key}\n\nhost:minio:9000\n\nhost\n{payload_hash}"
+              string_to_sign = f"AWS4-HMAC-SHA256\n{amz}\n{scope}\n{hashlib.sha256(canonical.encode()).hexdigest()}"
+              def sign(k, m): return hmac.new(k, m.encode(), hashlib.sha256).digest()
+              k = sign(("AWS4" + secret).encode(), stamp); k = sign(k, "us-east-1"); k = sign(k, "s3"); k = sign(k, "aws4_request")
+              sig = hmac.new(k, string_to_sign.encode(), hashlib.sha256).hexdigest()
+              req = urllib.request.Request(f"http://minio:9000/{bucket}/{key}", method=method, data=data)
+              req.add_header("Authorization", f"AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders=host, Signature={sig}")
+              req.add_header("X-Amz-Date", amz); req.add_header("X-Amz-Content-Sha256", payload_hash)
+              try:
+                  with urllib.request.urlopen(req) as resp: return resp.status, resp.read()
+              except urllib.error.HTTPError as e: return e.code, e.read()
+          status, _ = call("PUT", "ci-probe.txt", body); assert status == 200, status
+          status, got = call("GET", "ci-probe.txt"); assert status == 200 and got == body, (status, got)
+          status, _ = call("DELETE", "ci-probe.txt"); assert status in (200, 204), status
+          status, _ = call("GET", "ci-probe.txt"); assert status == 404, status
+          print("S3 直接往返通過")
+          PYEOF
+          # (b) api presigned 往返：建會話→PUT 位元組→回報進度→完成→檔案存在。
+          # 完成後掃描狀態為 pending（掃描器未接線）：授權端點須 fail-closed，
+          # 其結果只記錄，不以此判定上傳往返失敗；下載比對已由 (a) 覆蓋。
+          printf 'PNG-CI-TEST' > "$RUNNER_TEMP/ether-ci/test.png"
+          TEST_BYTES="$(wc -c < "$RUNNER_TEMP/ether-ci/test.png" | tr -d ' ')"
+          CHECKSUM="$(sha256sum "$RUNNER_TEMP/ether-ci/test.png" | cut -d' ' -f1)"
+          INIT_RESP="$(curl -fsS -X POST "$API/media/uploads" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+            -d "{\"mime_type\":\"image/png\",\"total_bytes\":$TEST_BYTES,\"original_filename\":\"ci-test.png\",\"checksum\":\"$CHECKSUM\"}" | tee "$EVIDENCE_DIR/stage-10-initiate.json")"
+          UPLOAD_ID="$(printf '%s' "$INIT_RESP" | jq -r '.upload_id')"
+          UPLOAD_URL="$(printf '%s' "$INIT_RESP" | jq -r '.upload_url')"
+          test -n "$UPLOAD_ID" && test -n "$UPLOAD_URL" && test "$UPLOAD_URL" != "null"
+          curl -fsS -X PUT --data-binary @"$RUNNER_TEMP/ether-ci/test.png" "$UPLOAD_URL"
+          curl -fsS -X POST "$API/media/uploads/$UPLOAD_ID/progress" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+            -d "{\"uploaded_bytes\":$TEST_BYTES,\"part_count\":1}" >/dev/null
+          FILE_ID="$(curl -fsS -X POST "$API/media/uploads/$UPLOAD_ID/complete" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' \
+            -d "{\"mime_type\":\"image/png\",\"original_filename\":\"ci-test.png\",\"checksum\":\"$CHECKSUM\"}" | tee "$EVIDENCE_DIR/stage-10-complete.json" | jq -r '.file_id')"
+          test -n "$FILE_ID" && test "$FILE_ID" != "null"
+          curl -fsS "$API/media/files/$FILE_ID" -H "Authorization: Bearer $TOKEN_A" | tee "$EVIDENCE_DIR/stage-10-file.json" | jq -e '.file_id != null' >/dev/null
+          AUTH_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$API/media/files/$FILE_ID/authorize" -H "Authorization: Bearer $TOKEN_A" -H 'Content-Type: application/json' -d '{}')"
+          jq -n --arg auth "$AUTH_STATUS" '{stage:"stage-10",status:"PASS",detail:"S3 直接往返與 presigned 上傳往返皆通過；掃描 pending 下授權端點狀態僅記錄。",authorize_status:($auth|tonumber)}' > "$EVIDENCE_DIR/outcomes/stage-10.json"
+
+      - name: Stage 11——Go／Web 全量測試
+        run: |
+          cd "$ETHER_ROOT"
+          # 單元測試（無 integration tag）：三個 Go module 各自 build／vet／test。
+          # 整合測試已於 Stage 5／6 執行，此處不重跑（避免已寫入的測試資料
+          # 影響冪等假設）；gofmt 只記錄（api health.go 既有漂移未授權修復，
+          # 不得以格式檢查失敗掩蓋測試結果，漂移記入報告範本）。
+          for module in services/api services/realtime-gateway services/worker; do
+            (cd "$module" && go build ./... && go vet ./... && go test -count=1 ./... 2>&1 | tee "$EVIDENCE_DIR/stage-11-go-$(basename "$module").txt")
+          done
+          gofmt -l services/api services/realtime-gateway services/worker | tee "$EVIDENCE_DIR/stage-11-gofmt.txt" || true
+          # Web：安裝方式與 Phase 02 驗收一致（不改 package.json、無 lockfile）。
+          cd "$ETHER_ROOT/apps/web"
+          node --version | tee "$EVIDENCE_DIR/stage-11-node-version.txt"
+          npm install --no-save --no-package-lock --no-audit --no-fund 2>&1 | tail -n 5
+          npm run typecheck 2>&1 | tee "$EVIDENCE_DIR/stage-11-web-typecheck.txt"
+          npm run lint 2>&1 | tee "$EVIDENCE_DIR/stage-11-web-lint.txt"
+          npm run format 2>&1 | tee "$EVIDENCE_DIR/stage-11-web-format.txt"
+          npm run build 2>&1 | tee "$EVIDENCE_DIR/stage-11-web-build.txt"
+          node tests/run.mjs 2>&1 | tee "$EVIDENCE_DIR/stage-11-web-tests.txt"
+          jq -n '{stage:"stage-11",status:"PASS",detail:"Go 三模組 build／vet／test 與 Web typecheck／lint／format／build／tests 皆通過。"}' > "$EVIDENCE_DIR/outcomes/stage-11.json"
+
+      - name: 彙整階段結果
+        if: always()
+        run: |
+          cd "$ETHER_ROOT"
+          docker compose ps --format json > "$EVIDENCE_DIR/final-ps.json" || true
+          docker compose logs --no-color --tail 200 api > "$EVIDENCE_DIR/final-api-logs.txt" || true
+          docker compose logs --no-color --tail 200 keycloak > "$EVIDENCE_DIR/final-keycloak-logs.txt" || true
+          # Traefik 路由段（S4-12）與 Ollama 段：本 job 未啟動，記
+          # NOT VERIFIED 附原因，不得以 api 直連健康檢查冒充 Traefik 驗證。
+          jq -n '{stage:"s4-12-traefik",status:"NOT VERIFIED",detail:"Traefik 未啟動：須網域＋ACME／TLS 測試設計定案後另行驗證，api 直連健康檢查不得冒充。"}' > "$EVIDENCE_DIR/outcomes/s4-12-traefik.json"
+          jq -n '{stage:"ollama",status:"NOT VERIFIED",detail:"Ollama 未啟動：模型清單與 GPU／VRAM 評估待 Phase 09 定稿，不得假設可啟動。"}' > "$EVIDENCE_DIR/outcomes/ollama.json"
+          jq -s '{run_id:"${{ github.run_id }}",stages:.}' "$EVIDENCE_DIR/outcomes/"*.json > "$EVIDENCE_DIR/stage-outcomes.json"
+          cat "$EVIDENCE_DIR/stage-outcomes.json"
+
+      # TODO：將佔位 SHA 改為查證後的完整 commit SHA（見檔頭 TODO）。
+      - name: 上傳證據 artifact（7 天，不含 volume、不含 secret）
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ether-isolated-integration-evidence
+          path: ci-evidence
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Stage 12——完整清理（always）
+        if: always()
+        run: |
+          cd "$ETHER_ROOT"
+          # 清理授權（使用者指令）：僅清理本次專屬 Compose project
+          #（ether-isolated-integration）及其專屬 volume。執行前先列出
+          # 專案服務與狀態，確認 project 名無誤；不得對其他 project 清理，
+          # 不得以無參數 down 影響其他服務（本 Runner 上亦無其他服務，
+          # Stage 1 已證明為新 Runner）。
+          docker compose config --services | tee "$EVIDENCE_DIR/cleanup-services.txt"
+          docker compose ps -a | tee "$EVIDENCE_DIR/cleanup-ps-before.txt" || true
+          docker compose down -v --remove-orphans | tee "$EVIDENCE_DIR/cleanup-down.txt" || true
+          # 殘留檢查：本次 project 的容器／volume／網路須全數清除。
+          test -z "$(docker ps -a -q --filter 'label=com.docker.compose.project=ether-isolated-integration')"
+          test -z "$(docker volume ls -q --filter 'label=com.docker.compose.project=ether-isolated-integration')"
+          test -z "$(docker network ls -q --filter 'label=com.docker.compose.project=ether-isolated-integration')"
+          # 清除臨時 token／密碼檔案與 /tmp 工具（Runner 銷毀後亦消失，
+          # 此處先行清除，證據 artifact 不含這些檔案）。
+          rm -rf "$RUNNER_TEMP/ether-ci" "$RUNNER_TEMP/nats-setup"
+          echo "清理完成：本次 project 容器／網路／volume 已清除，臨時憑證已刪除。"
+
+  platform-checks:
+    name: 平台檢查（S1-4／S3-9／S3-10／S3-11／S4-14）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # TODO：將佔位 SHA 改為查證後的完整 commit SHA（見檔頭 TODO）。
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: 專案根目錄辨識
+        run: |
+          for candidate in "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/ether"; do
+            if [ -f "$candidate/infrastructure/docker/docker-compose.yml" ] && [ -f "$candidate/services/api/go.mod" ]; then
+              echo "ETHER_ROOT=$candidate" >> "$GITHUB_ENV"
+              echo "EVIDENCE_DIR=$GITHUB_WORKSPACE/ci-evidence-platform" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::找不到 ETHER 專案根目錄。" >&2; exit 1
+
+      - name: 產生本次專用隨機測試密碼
+        run: |
+          gen() { openssl rand -hex 24; }
+          CI_POSTGRES_PASSWORD="$(gen)"; echo "::add-mask::$CI_POSTGRES_PASSWORD"
+          CI_MINIO_ROOT_PASSWORD="$(gen)"; echo "::add-mask::$CI_MINIO_ROOT_PASSWORD"
+          CI_MEILI_MASTER_KEY="$(gen)"; echo "::add-mask::$CI_MEILI_MASTER_KEY"
+          CI_KEYCLOAK_ADMIN_PASSWORD="$(gen)"; echo "::add-mask::$CI_KEYCLOAK_ADMIN_PASSWORD"
+          CI_GLITCHTIP_SECRET="$(gen)"; echo "::add-mask::$CI_GLITCHTIP_SECRET"
+          CI_GRAFANA_PASSWORD="$(gen)"; echo "::add-mask::$CI_GRAFANA_PASSWORD"
+          {
+            echo "CI_POSTGRES_PASSWORD=$CI_POSTGRES_PASSWORD"
+            echo "CI_MINIO_ROOT_PASSWORD=$CI_MINIO_ROOT_PASSWORD"
+            echo "CI_MEILI_MASTER_KEY=$CI_MEILI_MASTER_KEY"
+            echo "CI_KEYCLOAK_ADMIN_PASSWORD=$CI_KEYCLOAK_ADMIN_PASSWORD"
+            echo "GLITCHTIP_SECRET_KEY=$CI_GLITCHTIP_SECRET"
+            echo "GRAFANA_ADMIN_PASSWORD=$CI_GRAFANA_PASSWORD"
+            echo "POSTGRES_DB=ether"; echo "POSTGRES_USER=ether"; echo "KEYCLOAK_DB=keycloak"; echo "GLITCHTIP_DB=glitchtip"
+            echo "MINIO_ROOT_USER=ether-ci"; echo "MEILI_MASTER_KEY=$CI_MEILI_MASTER_KEY"; echo "MEILISEARCH_API_KEY=$CI_MEILI_MASTER_KEY"
+            echo "KEYCLOAK_ADMIN=ci-admin"; echo "KEYCLOAK_ADMIN_PASSWORD=$CI_KEYCLOAK_ADMIN_PASSWORD"
+            echo "KEYCLOAK_REALM=ether-ci"; echo "CI_REALM=ether-ci"; echo "CI_MINIO_BUCKET=ether-ci-media"
+            echo "COMPOSE_PROJECT_NAME=ether-isolated-integration"
+            echo "COMPOSE_FILE=$ETHER_ROOT/infrastructure/docker/docker-compose.yml:$ETHER_ROOT/infrastructure/docker/docker-compose.ci.yml"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE_DIR/outcomes"
+          printf '127.0.0.1 keycloak\n127.0.0.1 minio\n' | sudo tee -a /etc/hosts >/dev/null
+
+      - name: S1-4——promtool 設定檢查（經映像執行）
+        run: |
+          docker run --rm -v "$ETHER_ROOT/infrastructure/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            prom/prometheus promtool check config /etc/prometheus/prometheus.yml 2>&1 | tee "$EVIDENCE_DIR/s1-4-promtool.txt"
+          jq -n '{stage:"s1-4",status:"PASS",detail:"promtool check config 通過。"}' > "$EVIDENCE_DIR/outcomes/s1-4.json"
+
+      - name: S3-9／S3-10——預設啟動與監控健康檢查
+        run: |
+          cd "$ETHER_ROOT"
+          docker compose up -d postgresql valkey nats minio meilisearch openbao keycloak prometheus grafana loki
+          for i in $(seq 1 30); do
+            if docker compose exec -T postgresql pg_isready -U ether -d ether; then break; fi
+            sleep 2; test "$i" -lt 30
+          done
+          docker compose exec -T postgresql psql -U ether -d ether -tc "SELECT 1 FROM pg_database WHERE datname='keycloak';" | grep -q 1 || docker compose exec -T postgresql createdb -U ether keycloak
+          # S3-9：預設流程中 livekit 不得啟動（隔離成敗以實際容器狀態判定）。
+          if docker compose ps --format json 2>/dev/null | grep -q '"Service":"livekit"'; then
+            echo "::error::預設流程中 livekit 已啟動，profile 隔離未通過。" >&2; exit 1
+          fi
+          for i in $(seq 1 60); do
+            if curl -fsS http://keycloak:8080/health/ready >/dev/null 2>&1; then break; fi
+            sleep 5; test "$i" -lt 60
+          done
+          curl -fsS http://keycloak:8080/health/ready >/dev/null
+          # S3-10：prometheus 自我抓取 up==1；Grafana／Loki 健康端點回 200。
+          for i in $(seq 1 30); do
+            if curl -fsS 'http://localhost:9090/api/v1/query?query=up{job="prometheus"}' | jq -e '.data.result[0].value[1] == "1"' >/dev/null 2>&1; then break; fi
+            sleep 5; test "$i" -lt 30
+          done
+          curl -fsS 'http://localhost:9090/api/v1/query?query=up{job="prometheus"}' | tee "$EVIDENCE_DIR/s3-10-prometheus-up.json" | jq -e '.data.result[0].value[1] == "1"' >/dev/null
+          curl -fsS http://localhost:3000/api/health | tee "$EVIDENCE_DIR/s3-10-grafana.json" | jq -e '.database == "ok"' >/dev/null
+          curl -fsS http://localhost:3100/ready | tee "$EVIDENCE_DIR/s3-10-loki.txt"
+          docker compose ps --format json | tee "$EVIDENCE_DIR/s3-9-ps.json"
+          jq -n '{stage:"s3-9-s3-10",status:"PASS",detail:"預設流程 livekit 未啟動；prometheus 自我抓取與 Grafana／Loki 健康檢查通過。"}' > "$EVIDENCE_DIR/outcomes/s3-9-s3-10.json"
+
+      - name: S3-11——LiveKit profile 負向流程（不得加入金鑰）
+        run: |
+          cd "$ETHER_ROOT"
+          # profile 流程：只啟動 livekit，記錄容器狀態、日誌與 healthcheck。
+          # 無 keys 時預期觀察 ErrKeysNotSet：預期的無 keys 錯誤行為不得
+          # 直接判定為驗證失敗，須與非預期啟動失敗區分，並記錄日誌全文。
+          docker compose --profile phase07 up -d livekit 2>&1 | tee "$EVIDENCE_DIR/s3-11-up.txt" || true
+          sleep 20
+          docker compose ps --format json livekit | tee "$EVIDENCE_DIR/s3-11-ps.json" || true
+          docker compose logs --no-color livekit > "$EVIDENCE_DIR/s3-11-logs.txt" 2>&1 || true
+          if grep -q 'ErrKeysNotSet' "$EVIDENCE_DIR/s3-11-logs.txt"; then
+            LIVEKIT_STATUS="PASS"; LIVEKIT_DETAIL="觀察到預期的 ErrKeysNotSet（無金鑰），未加入任何開發金鑰。"
+          else
+            LIVEKIT_STATUS="NOT VERIFIED"; LIVEKIT_DETAIL="未觀察到 ErrKeysNotSet，日誌見證據檔；不得宣稱通話功能可用。"
+          fi
+          jq -n --arg s "$LIVEKIT_STATUS" --arg d "$LIVEKIT_DETAIL" '{stage:"s3-11",status:$s,detail:$d}' > "$EVIDENCE_DIR/outcomes/s3-11.json"
+          echo "S3-11：$LIVEKIT_STATUS——$LIVEKIT_DETAIL"
+          docker compose stop livekit || true
+          docker compose rm -f livekit || true
+
+      - name: S4-14——Keycloak 與 GlitchTip 共用資料庫驗證嘗試
+        run: |
+          cd "$ETHER_ROOT"
+          # Keycloak 已於 S3-9 啟動且健康檢查通過（見上一步證據）。
+          curl -fsS http://keycloak:8080/health/ready >/dev/null
+          # GlitchTip：資料庫須先建立；首啟設定若失敗，記 NOT VERIFIED
+          # 附原因，不得阻塞整 run（本步驟以 continue-on-error 語義收尾，
+          # 實際以 outcome 檔案為準）。
+          docker compose exec -T postgresql psql -U ether -d ether -tc "SELECT 1 FROM pg_database WHERE datname='glitchtip';" | grep -q 1 || docker compose exec -T postgresql createdb -U ether glitchtip
+          docker compose up -d glitchtip 2>&1 | tee "$EVIDENCE_DIR/s4-14-glitchtip-up.txt" || true
+          GLITCHTIP_OK=0
+          for i in $(seq 1 18); do
+            if curl -fsS http://localhost:8000/ >/dev/null 2>&1; then GLITCHTIP_OK=1; break; fi
+            sleep 5
+          done
+          docker compose logs --no-color glitchtip > "$EVIDENCE_DIR/s4-14-glitchtip-logs.txt" 2>&1 || true
+          if [ "$GLITCHTIP_OK" = "1" ]; then
+            GLITCHTIP_STATUS="PASS"; GLITCHTIP_DETAIL="GlitchTip 健康檢查通過。"
+          else
+            GLITCHTIP_STATUS="NOT VERIFIED"; GLITCHTIP_DETAIL="GlitchTip 首啟未達健康狀態（設定或映像行為待查），日誌見證據檔；映像更換對下游的影響未完全確認。"
+          fi
+          jq -n --arg s "$GLITCHTIP_STATUS" --arg d "$GLITCHTIP_DETAIL" '{stage:"s4-14",status:$s,detail:$d}' > "$EVIDENCE_DIR/outcomes/s4-14.json"
+          echo "S4-14 GlitchTip：$GLITCHTIP_STATUS——$GLITCHTIP_DETAIL"
+
+      - name: 彙整階段結果
+        if: always()
+        run: |
+          jq -s '{run_id:"${{ github.run_id }}",stages:.}' "$EVIDENCE_DIR/outcomes/"*.json > "$EVIDENCE_DIR/stage-outcomes.json"
+          cat "$EVIDENCE_DIR/stage-outcomes.json"
+
+      # TODO：將佔位 SHA 改為查證後的完整 commit SHA（見檔頭 TODO）。
+      - name: 上傳證據 artifact（7 天，不含 volume、不含 secret）
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ether-isolated-integration-platform-evidence
+          path: ci-evidence-platform
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: 清理（always，僅本次專屬 project）
+        if: always()
+        run: |
+          cd "$ETHER_ROOT"
+          docker compose config --services | tee "$EVIDENCE_DIR/cleanup-services.txt"
+          docker compose down -v --remove-orphans | tee "$EVIDENCE_DIR/cleanup-down.txt" || true
+          test -z "$(docker ps -a -q --filter 'label=com.docker.compose.project=ether-isolated-integration')"
+          test -z "$(docker volume ls -q --filter 'label=com.docker.compose.project=ether-isolated-integration')"
+          echo "清理完成：本次 project 容器／volume 已清除。"
